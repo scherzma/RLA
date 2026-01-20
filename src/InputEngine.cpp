@@ -117,6 +117,33 @@ float InputEngine::GetBufferUtilization() const {
     return static_cast<float>(eventBuffer_.size()) / static_cast<float>(eventBuffer_.capacity());
 }
 
+void InputEngine::UpdateEventRates(size_t eventsA, size_t eventsB) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+
+    if (lastRateUpdateTime_ == 0) {
+        lastRateUpdateTime_ = now.QuadPart;
+        lastEventCountA_ = eventsA;
+        lastEventCountB_ = eventsB;
+        return;
+    }
+
+    double elapsedSeconds = static_cast<double>(now.QuadPart - lastRateUpdateTime_) / qpcFrequency_;
+
+    // Update rate every 100ms for smoother display
+    if (elapsedSeconds >= 0.1) {
+        size_t deltaA = eventsA - lastEventCountA_;
+        size_t deltaB = eventsB - lastEventCountB_;
+
+        eventRateA_ = deltaA / elapsedSeconds;
+        eventRateB_ = deltaB / elapsedSeconds;
+
+        lastRateUpdateTime_ = now.QuadPart;
+        lastEventCountA_ = eventsA;
+        lastEventCountB_ = eventsB;
+    }
+}
+
 // Note: The high-priority thread approach is replaced with direct WM_INPUT processing
 // which is more reliable on Windows. The thread function below is kept for reference
 // but the actual input processing happens in ProcessRawInput() called from WndProc.

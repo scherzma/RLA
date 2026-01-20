@@ -83,11 +83,20 @@ private:
     bool syncPlotView_ = false;
     float plotTimeOffset_ = 0.0f;
 
+    // Live plotting data (updated during recording)
+    std::vector<double> liveTimesA_;
+    std::vector<double> liveVelocitiesA_;
+    std::vector<double> liveTimesB_;
+    std::vector<double> liveVelocitiesB_;
+
     // Status message
     std::string statusMessage_;
 
     // QPC frequency
     int64_t qpcFrequency_ = 0;
+
+    // Helper to calculate velocity
+    static double CalculateVelocity(int32_t dx, int32_t dy);
 };
 
 } // namespace RLA

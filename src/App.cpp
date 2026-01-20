@@ -68,11 +68,18 @@ void App::Update() {
         }
         // Recording
         else if (state_ == AppState::Recording) {
+            double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / qpcFrequency_;
+            double velocity = CalculateVelocity(event.deltaX, event.deltaY);
+
             if (deviceManager_->IsMouseA(event.deviceHandle)) {
                 currentSession_.eventsA.push_back(event);
+                liveTimesA_.push_back(timeMs);
+                liveVelocitiesA_.push_back(velocity);
             }
             else if (deviceManager_->IsMouseB(event.deviceHandle)) {
                 currentSession_.eventsB.push_back(event);
+                liveTimesB_.push_back(timeMs);
+                liveVelocitiesB_.push_back(velocity);
             }
         }
     });
@@ -252,6 +259,14 @@ void App::RenderControlPanel() {
         ImGui::Text("Events: A=%zu B=%zu",
                    currentSession_.eventsA.size(),
                    currentSession_.eventsB.size());
+
+        // Show live polling rates
+        inputEngine_->UpdateEventRates(currentSession_.eventsA.size(), currentSession_.eventsB.size());
+        double rateA = inputEngine_->GetEventRateA();
+        double rateB = inputEngine_->GetEventRateB();
+
+        ImGui::SameLine();
+        ImGui::Text("| Rate: A=%.0f Hz  B=%.0f Hz", rateA, rateB);
     }
 
     if (!canRecord && !isRecording) {
@@ -296,61 +311,100 @@ void App::RenderPlotPanel() {
 
     if (ImPlot::BeginPlot("Velocity vs Time", plotSize)) {
         ImPlot::SetupAxes("Time (ms)", "Velocity (counts)");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, 1000, ImGuiCond_Once);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
 
-        // Plot Mouse A data
-        if (!analysisResult_.mouseAData.empty()) {
-            std::vector<double> timesA, velsA;
-            timesA.reserve(analysisResult_.mouseAData.size());
-            velsA.reserve(analysisResult_.mouseAData.size());
-
-            for (const auto& p : analysisResult_.mouseAData) {
-                timesA.push_back(p.timeMs);
-                velsA.push_back(p.velocity);
+        // During recording, auto-fit X axis to show all data
+        if (state_ == AppState::Recording) {
+            // Find max time from live data
+            double maxTime = 100.0; // minimum range
+            if (!liveTimesA_.empty()) {
+                maxTime = (std::max)(maxTime, liveTimesA_.back());
             }
-
-            ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
-            ImPlot::PlotLine("Mouse A (Reference)", timesA.data(), velsA.data(),
-                            static_cast<int>(timesA.size()));
+            if (!liveTimesB_.empty()) {
+                maxTime = (std::max)(maxTime, liveTimesB_.back());
+            }
+            // Add 10% padding
+            ImPlot::SetupAxisLimits(ImAxis_X1, 0, maxTime * 1.1, ImPlotCond_Always);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
+        }
+        else {
+            ImPlot::SetupAxisLimits(ImAxis_X1, 0, 1000, ImGuiCond_Once);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
         }
 
-        // Plot Mouse B data
-        if (!analysisResult_.mouseBData.empty()) {
-            std::vector<double> timesB, velsB;
-            timesB.reserve(analysisResult_.mouseBData.size());
-            velsB.reserve(analysisResult_.mouseBData.size());
-
-            for (const auto& p : analysisResult_.mouseBData) {
-                timesB.push_back(p.timeMs + plotTimeOffset_);
-                velsB.push_back(p.velocity);
+        // During recording, show live data
+        if (state_ == AppState::Recording) {
+            // Plot live Mouse A data
+            if (!liveTimesA_.empty()) {
+                ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
+                ImPlot::PlotLine("Mouse A (Reference)", liveTimesA_.data(), liveVelocitiesA_.data(),
+                                static_cast<int>(liveTimesA_.size()));
             }
 
-            ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
-            ImPlot::PlotLine("Mouse B (Test)", timesB.data(), velsB.data(),
-                            static_cast<int>(timesB.size()));
+            // Plot live Mouse B data
+            if (!liveTimesB_.empty()) {
+                ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
+                ImPlot::PlotLine("Mouse B (Test)", liveTimesB_.data(), liveVelocitiesB_.data(),
+                                static_cast<int>(liveTimesB_.size()));
+            }
         }
+        else {
+            // Plot analysis result data
+            // Plot Mouse A data
+            if (!analysisResult_.mouseAData.empty()) {
+                std::vector<double> timesA, velsA;
+                timesA.reserve(analysisResult_.mouseAData.size());
+                velsA.reserve(analysisResult_.mouseAData.size());
 
-        // Draw impact markers
-        if (analysisResult_.valid) {
-            double impactTimeA = 0.0;
-            double impactTimeB = 0.0;
+                for (const auto& p : analysisResult_.mouseAData) {
+                    timesA.push_back(p.timeMs);
+                    velsA.push_back(p.velocity);
+                }
 
-            // Find impact times from timestamps
-            for (const auto& p : analysisResult_.mouseAData) {
-                // Approximate - just use the time from data
-                impactTimeA = p.timeMs;
-                break;
+                ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
+                ImPlot::PlotLine("Mouse A (Reference)", timesA.data(), velsA.data(),
+                                static_cast<int>(timesA.size()));
             }
 
-            ImPlot::SetNextLineStyle(ImVec4(0.2f, 1.0f, 0.2f, 0.8f), 1.0f);
-            double impactX[2] = { impactTimeA, impactTimeA };
-            double impactY[2] = { 0, 1000 };
-            ImPlot::PlotLine("##ImpactA", impactX, impactY, 2);
+            // Plot Mouse B data
+            if (!analysisResult_.mouseBData.empty()) {
+                std::vector<double> timesB, velsB;
+                timesB.reserve(analysisResult_.mouseBData.size());
+                velsB.reserve(analysisResult_.mouseBData.size());
+
+                for (const auto& p : analysisResult_.mouseBData) {
+                    timesB.push_back(p.timeMs + plotTimeOffset_);
+                    velsB.push_back(p.velocity);
+                }
+
+                ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
+                ImPlot::PlotLine("Mouse B (Test)", timesB.data(), velsB.data(),
+                                static_cast<int>(timesB.size()));
+            }
+
+            // Draw impact markers
+            if (analysisResult_.valid) {
+                double impactTimeA = 0.0;
+
+                // Find impact times from timestamps
+                for (const auto& p : analysisResult_.mouseAData) {
+                    // Approximate - just use the time from data
+                    impactTimeA = p.timeMs;
+                    break;
+                }
+
+                ImPlot::SetNextLineStyle(ImVec4(0.2f, 1.0f, 0.2f, 0.8f), 1.0f);
+                double impactX[2] = { impactTimeA, impactTimeA };
+                double impactY[2] = { 0, 1000 };
+                ImPlot::PlotLine("##ImpactA", impactX, impactY, 2);
+            }
         }
 
         ImPlot::EndPlot();
     }
+}
+
+double App::CalculateVelocity(int32_t dx, int32_t dy) {
+    return std::sqrt(static_cast<double>(dx * dx + dy * dy));
 }
 
 void App::RenderResultPanel() {
@@ -427,6 +481,12 @@ void App::StartRecording() {
 
     analysisResult_ = AnalysisResult{}; // Clear previous results
 
+    // Clear live plotting data
+    liveTimesA_.clear();
+    liveVelocitiesA_.clear();
+    liveTimesB_.clear();
+    liveVelocitiesB_.clear();
+
     TransitionTo(AppState::Recording);
     statusMessage_ = "Recording... Perform the bump test, then click Stop";
 }
@@ -436,10 +496,12 @@ void App::StopRecording() {
     QueryPerformanceCounter(&timestamp);
     currentSession_.endTimestamp = timestamp.QuadPart;
 
-    TransitionTo(AppState::Ready);
-    statusMessage_ = std::format("Recording stopped. A={} events, B={} events. Click Analyze.",
+    statusMessage_ = std::format("Recording stopped. A={} events, B={} events. Analyzing...",
                                  currentSession_.eventsA.size(),
                                  currentSession_.eventsB.size());
+
+    // Auto-analyze after stopping
+    RunAnalysis();
 }
 
 void App::RunAnalysis() {

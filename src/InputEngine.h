@@ -38,6 +38,11 @@ public:
     size_t GetBufferCapacity() const { return eventBuffer_.capacity(); }
     float GetBufferUtilization() const;
 
+    // Get event rate statistics (events per second)
+    double GetEventRateA() const { return eventRateA_; }
+    double GetEventRateB() const { return eventRateB_; }
+    void UpdateEventRates(size_t eventsA, size_t eventsB);
+
     // Process WM_INPUT message (call from window procedure)
     void ProcessRawInput(LPARAM lParam);
 
@@ -55,6 +60,13 @@ private:
 
     // QPC frequency for timestamp conversion
     int64_t qpcFrequency_ = 0;
+
+    // Event rate tracking
+    double eventRateA_ = 0.0;
+    double eventRateB_ = 0.0;
+    int64_t lastRateUpdateTime_ = 0;
+    size_t lastEventCountA_ = 0;
+    size_t lastEventCountB_ = 0;
 };
 
 } // namespace RLA
