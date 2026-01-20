@@ -1,0 +1,63 @@
+Package: vcpkg-cmake-config
+Version: 2024-05-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 256253072bc273f2187b219fc88d72e83138bd5278793025744bb432f53d09a5
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2024-04-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: fc0b243690a0b695c2beb9bc4dd4c23ca7ac6fec629e03007c2485a34536105c
+Status: install ok installed
+
+Package: imgui
+Version: 1.91.0
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 9ed840515f367f0abe46d1cc82a4469f7f37345a026978a8ce9d0af53c54d6dc
+Description: Bloat-free Immediate Mode Graphical User interface for C++ with minimal dependencies.
+Status: install ok installed
+
+Package: imgui
+Feature: docking-experimental
+Architecture: x64-windows
+Multi-Arch: same
+Description: Build with docking support
+Status: install ok installed
+
+Package: imgui
+Feature: dx11-binding
+Architecture: x64-windows
+Multi-Arch: same
+Description: Make available DirectX11 binding
+Status: install ok installed
+
+Package: imgui
+Feature: win32-binding
+Architecture: x64-windows
+Multi-Arch: same
+Description: Make available Win32 binding
+Status: install ok installed
+
+Package: implot
+Version: 0.16
+Depends: imgui, vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: f7386d7c42484b4e38b85cfd2d6c4a67cfe026f783c8e55070f903c27e4c5e6d
+Description: Advanced 2D Plotting for Dear ImGui
+Status: install ok installed
+
+Package: nlohmann-json
+Version: 3.11.3
+Port-Version: 1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 351ce83b938c29becd9d82a576a06fd78c5d761991883cfcdbaf5a66801b0e8d
+Description: JSON for Modern C++
+Status: install ok installed
+

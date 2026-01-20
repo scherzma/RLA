@@ -1,0 +1,13 @@
+{
+  "name": "rla",
+  "version": "1.0.0",
+  "description": "Relative Latency Analyzer for measuring input latency between gaming mice",
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": ["docking-experimental", "dx11-binding", "win32-binding"]
+    },
+    "implot",
+    "nlohmann-json"
+  ]
+}

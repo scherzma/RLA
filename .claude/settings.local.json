@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"C:\\\\Users\\\\SocNF\\\\Documents\\\\code\\\\cpp\\\\RLA\")",
+      "Bash(cmd.exe /c:*)",
+      "Bash(powershell.exe -Command \"& ''C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe'' ''C:\\\\Users\\\\SocNF\\\\Documents\\\\code\\\\cpp\\\\RLA\\\\RLA.vcxproj'' /p:Configuration=Debug /p:Platform=x64 /m 2>&1\")",
+      "Bash(powershell.exe:*)"
+    ]
+  }
+}
