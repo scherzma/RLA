@@ -293,7 +293,7 @@ void App::RenderControlPanel() {
 void App::RenderPlotPanel() {
     ImGui::Text("Velocity Plot");
 
-    // Plot controls
+    // Plot controls - first row
     ImGui::Checkbox("Sync View (shift B by latency)", &syncPlotView_);
 
     if (syncPlotView_ && analysisResult_.valid) {
@@ -301,6 +301,26 @@ void App::RenderPlotPanel() {
     }
     else {
         plotTimeOffset_ = 0.0f;
+    }
+
+    // Smoothing controls - same row
+    ImGui::SameLine();
+    ImGui::Checkbox("Smoothing", &enableSmoothing_);
+
+    if (enableSmoothing_) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100);
+        const char* modes[] = { "Samples", "Time (ms)" };
+        ImGui::Combo("##SmoothMode", &smoothingMode_, modes, 2);
+
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80);
+        if (smoothingMode_ == 0) {
+            ImGui::SliderInt("##SmoothSamples", &smoothingSamples_, 2, 50, "%d pts");
+        }
+        else {
+            ImGui::SliderFloat("##SmoothTime", &smoothingTimeMs_, 0.1f, 10.0f, "%.1f ms");
+        }
     }
 
     // Calculate plot size - use available space minus room for result panel and status bar
@@ -335,16 +355,46 @@ void App::RenderPlotPanel() {
         if (state_ == AppState::Recording) {
             // Plot live Mouse A data
             if (!liveTimesA_.empty()) {
-                ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
-                ImPlot::PlotLine("Mouse A (Reference)", liveTimesA_.data(), liveVelocitiesA_.data(),
-                                static_cast<int>(liveTimesA_.size()));
+                std::vector<double> plotTimesA, plotVelsA;
+
+                if (enableSmoothing_) {
+                    if (smoothingMode_ == 0) {
+                        ApplyMovingAverageSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingSamples_);
+                    } else {
+                        ApplyTimeWindowSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingTimeMs_);
+                    }
+                } else {
+                    plotTimesA = liveTimesA_;
+                    plotVelsA = liveVelocitiesA_;
+                }
+
+                if (!plotTimesA.empty()) {
+                    ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
+                    ImPlot::PlotLine("Mouse A (Reference)", plotTimesA.data(), plotVelsA.data(),
+                                    static_cast<int>(plotTimesA.size()));
+                }
             }
 
             // Plot live Mouse B data
             if (!liveTimesB_.empty()) {
-                ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
-                ImPlot::PlotLine("Mouse B (Test)", liveTimesB_.data(), liveVelocitiesB_.data(),
-                                static_cast<int>(liveTimesB_.size()));
+                std::vector<double> plotTimesB, plotVelsB;
+
+                if (enableSmoothing_) {
+                    if (smoothingMode_ == 0) {
+                        ApplyMovingAverageSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingSamples_);
+                    } else {
+                        ApplyTimeWindowSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingTimeMs_);
+                    }
+                } else {
+                    plotTimesB = liveTimesB_;
+                    plotVelsB = liveVelocitiesB_;
+                }
+
+                if (!plotTimesB.empty()) {
+                    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
+                    ImPlot::PlotLine("Mouse B (Test)", plotTimesB.data(), plotVelsB.data(),
+                                    static_cast<int>(plotTimesB.size()));
+                }
             }
         }
         else {
@@ -360,9 +410,23 @@ void App::RenderPlotPanel() {
                     velsA.push_back(p.velocity);
                 }
 
-                ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
-                ImPlot::PlotLine("Mouse A (Reference)", timesA.data(), velsA.data(),
-                                static_cast<int>(timesA.size()));
+                std::vector<double> plotTimesA, plotVelsA;
+                if (enableSmoothing_) {
+                    if (smoothingMode_ == 0) {
+                        ApplyMovingAverageSmoothing(timesA, velsA, plotTimesA, plotVelsA, smoothingSamples_);
+                    } else {
+                        ApplyTimeWindowSmoothing(timesA, velsA, plotTimesA, plotVelsA, smoothingTimeMs_);
+                    }
+                } else {
+                    plotTimesA = std::move(timesA);
+                    plotVelsA = std::move(velsA);
+                }
+
+                if (!plotTimesA.empty()) {
+                    ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
+                    ImPlot::PlotLine("Mouse A (Reference)", plotTimesA.data(), plotVelsA.data(),
+                                    static_cast<int>(plotTimesA.size()));
+                }
             }
 
             // Plot Mouse B data
@@ -376,9 +440,23 @@ void App::RenderPlotPanel() {
                     velsB.push_back(p.velocity);
                 }
 
-                ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
-                ImPlot::PlotLine("Mouse B (Test)", timesB.data(), velsB.data(),
-                                static_cast<int>(timesB.size()));
+                std::vector<double> plotTimesB, plotVelsB;
+                if (enableSmoothing_) {
+                    if (smoothingMode_ == 0) {
+                        ApplyMovingAverageSmoothing(timesB, velsB, plotTimesB, plotVelsB, smoothingSamples_);
+                    } else {
+                        ApplyTimeWindowSmoothing(timesB, velsB, plotTimesB, plotVelsB, smoothingTimeMs_);
+                    }
+                } else {
+                    plotTimesB = std::move(timesB);
+                    plotVelsB = std::move(velsB);
+                }
+
+                if (!plotTimesB.empty()) {
+                    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
+                    ImPlot::PlotLine("Mouse B (Test)", plotTimesB.data(), plotVelsB.data(),
+                                    static_cast<int>(plotTimesB.size()));
+                }
             }
 
             // Draw impact markers
@@ -630,6 +708,67 @@ void App::ExportCsv() {
         else {
             statusMessage_ = "Export failed: " + dataStore_->GetLastError();
         }
+    }
+}
+
+void App::ApplyMovingAverageSmoothing(const std::vector<double>& times, const std::vector<double>& values,
+                                      std::vector<double>& outTimes, std::vector<double>& outValues, int windowSize) {
+    outTimes.clear();
+    outValues.clear();
+
+    if (times.empty() || windowSize < 1) return;
+
+    int halfWindow = windowSize / 2;
+
+    for (size_t i = 0; i < times.size(); ++i) {
+        double sum = 0.0;
+        int count = 0;
+
+        for (int j = -halfWindow; j <= halfWindow; ++j) {
+            int idx = static_cast<int>(i) + j;
+            if (idx >= 0 && idx < static_cast<int>(values.size())) {
+                sum += values[idx];
+                ++count;
+            }
+        }
+
+        outTimes.push_back(times[i]);
+        outValues.push_back(count > 0 ? sum / count : 0.0);
+    }
+}
+
+void App::ApplyTimeWindowSmoothing(const std::vector<double>& times, const std::vector<double>& values,
+                                   std::vector<double>& outTimes, std::vector<double>& outValues, double windowMs) {
+    outTimes.clear();
+    outValues.clear();
+
+    if (times.empty() || windowMs <= 0) return;
+
+    size_t i = 0;
+    while (i < times.size()) {
+        double windowStart = times[i];
+        double windowEnd = windowStart + windowMs;
+
+        double sum = 0.0;
+        int count = 0;
+        double timeSum = 0.0;
+
+        // Gather all points within the time window
+        size_t j = i;
+        while (j < times.size() && times[j] < windowEnd) {
+            sum += values[j];
+            timeSum += times[j];
+            ++count;
+            ++j;
+        }
+
+        if (count > 0) {
+            outTimes.push_back(timeSum / count);  // Average time
+            outValues.push_back(sum / count);     // Average value
+        }
+
+        // Move to next window
+        i = j > i ? j : i + 1;
     }
 }
 

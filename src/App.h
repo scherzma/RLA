@@ -89,6 +89,18 @@ private:
     std::vector<double> liveTimesB_;
     std::vector<double> liveVelocitiesB_;
 
+    // Smoothing options
+    bool enableSmoothing_ = false;
+    int smoothingMode_ = 0;  // 0 = by samples, 1 = by time
+    int smoothingSamples_ = 3;  // Number of samples for moving average
+    float smoothingTimeMs_ = 1.0f;  // Time window in ms
+
+    // Smoothing helper functions
+    void ApplyMovingAverageSmoothing(const std::vector<double>& times, const std::vector<double>& values,
+                                     std::vector<double>& outTimes, std::vector<double>& outValues, int windowSize);
+    void ApplyTimeWindowSmoothing(const std::vector<double>& times, const std::vector<double>& values,
+                                  std::vector<double>& outTimes, std::vector<double>& outValues, double windowMs);
+
     // Status message
     std::string statusMessage_;
 
