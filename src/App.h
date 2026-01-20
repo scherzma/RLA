@@ -95,6 +95,18 @@ private:
     int smoothingSamples_ = 3;  // Number of samples for moving average
     float smoothingTimeMs_ = 1.0f;  // Time window in ms
 
+    // Y-axis scaling for Mouse B
+    bool enableYScaleB_ = false;
+    float yScaleB_ = 1.0f;  // Multiplier for Mouse B velocity values
+
+    // Time binning options (aggregates events into time windows)
+    bool enableTimeBinning_ = false;
+    float timeBinMs_ = 1.0f;  // Bin size in milliseconds
+
+    // Time binning helper function
+    void ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startTimestamp,
+                          std::vector<double>& outTimes, std::vector<double>& outVelocities, double binMs);
+
     // Smoothing helper functions
     void ApplyMovingAverageSmoothing(const std::vector<double>& times, const std::vector<double>& values,
                                      std::vector<double>& outTimes, std::vector<double>& outValues, int windowSize);
