@@ -44,7 +44,6 @@ private:
     void RenderDevicePanel();
     void RenderControlPanel();
     void RenderPlotPanel();
-    void RenderResultPanel();
     void RenderStatusBar();
 
     // State transitions
@@ -53,7 +52,6 @@ private:
     // Recording control
     void StartRecording();
     void StopRecording();
-    void RunAnalysis();
 
     // File operations
     void SaveSession();
@@ -80,8 +78,6 @@ private:
 
     // UI state
     bool showPlotWindow_ = true;
-    bool syncPlotView_ = false;
-    float plotTimeOffset_ = 0.0f;
 
     // Live plotting data (updated during recording)
     std::vector<double> liveTimesA_;

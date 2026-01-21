@@ -146,10 +146,6 @@ void App::RenderMainWindow() {
         RenderPlotPanel();
     }
 
-    if (analysisResult_.valid || !analysisResult_.errorMessage.empty()) {
-        RenderResultPanel();
-    }
-
     RenderStatusBar();
 
     ImGui::End();
@@ -273,17 +269,6 @@ void App::RenderControlPanel() {
         ImGui::EndDisabled();
     }
 
-    // Analyze button
-    ImGui::SameLine();
-    bool canAnalyze = !currentSession_.eventsA.empty() && !currentSession_.eventsB.empty() &&
-                      state_ != AppState::Recording;
-
-    if (!canAnalyze) ImGui::BeginDisabled();
-    if (ImGui::Button("Analyze")) {
-        RunAnalysis();
-    }
-    if (!canAnalyze) ImGui::EndDisabled();
-
     // Buffer utilization
     ImGui::SameLine();
     float utilization = inputEngine_->GetBufferUtilization() * 100.0f;
@@ -293,18 +278,7 @@ void App::RenderControlPanel() {
 void App::RenderPlotPanel() {
     ImGui::Text("Velocity Plot");
 
-    // Plot controls - first row
-    ImGui::Checkbox("Sync View (shift B by latency)", &syncPlotView_);
-
-    if (syncPlotView_ && analysisResult_.valid) {
-        plotTimeOffset_ = static_cast<float>(-analysisResult_.latencyDiffMicroseconds / 1000.0);
-    }
-    else {
-        plotTimeOffset_ = 0.0f;
-    }
-
-    // Smoothing controls - same row
-    ImGui::SameLine();
+    // Plot controls
     ImGui::Checkbox("Smoothing", &enableSmoothing_);
 
     if (enableSmoothing_) {
@@ -457,16 +431,14 @@ void App::RenderPlotPanel() {
             }
         }
         else {
-            // Plot analysis result data
+            // Plot recorded session data (after recording stopped)
             // Plot Mouse A data
-            if (!currentSession_.eventsA.empty() || !analysisResult_.mouseAData.empty()) {
+            if (!currentSession_.eventsA.empty()) {
                 std::vector<double> plotTimesA, plotVelsA;
 
-                if (enableTimeBinning_ && !currentSession_.eventsA.empty()) {
-                    // Use time binning from raw events
+                if (enableTimeBinning_) {
                     ApplyTimeBinning(currentSession_.eventsA, currentSession_.startTimestamp,
                                      plotTimesA, plotVelsA, timeBinMs_);
-                    // Apply smoothing on top if enabled
                     if (enableSmoothing_ && !plotTimesA.empty()) {
                         std::vector<double> smoothedTimes, smoothedVels;
                         if (smoothingMode_ == 0) {
@@ -477,25 +449,17 @@ void App::RenderPlotPanel() {
                         plotTimesA = std::move(smoothedTimes);
                         plotVelsA = std::move(smoothedVels);
                     }
-                } else if (!analysisResult_.mouseAData.empty()) {
-                    std::vector<double> timesA, velsA;
-                    timesA.reserve(analysisResult_.mouseAData.size());
-                    velsA.reserve(analysisResult_.mouseAData.size());
-
-                    for (const auto& p : analysisResult_.mouseAData) {
-                        timesA.push_back(p.timeMs);
-                        velsA.push_back(p.velocity);
-                    }
-
+                } else {
+                    // Use pre-computed live data
                     if (enableSmoothing_) {
                         if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(timesA, velsA, plotTimesA, plotVelsA, smoothingSamples_);
+                            ApplyMovingAverageSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingSamples_);
                         } else {
-                            ApplyTimeWindowSmoothing(timesA, velsA, plotTimesA, plotVelsA, smoothingTimeMs_);
+                            ApplyTimeWindowSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingTimeMs_);
                         }
                     } else {
-                        plotTimesA = std::move(timesA);
-                        plotVelsA = std::move(velsA);
+                        plotTimesA = liveTimesA_;
+                        plotVelsA = liveVelocitiesA_;
                     }
                 }
 
@@ -507,20 +471,12 @@ void App::RenderPlotPanel() {
             }
 
             // Plot Mouse B data
-            if (!currentSession_.eventsB.empty() || !analysisResult_.mouseBData.empty()) {
+            if (!currentSession_.eventsB.empty()) {
                 std::vector<double> plotTimesB, plotVelsB;
 
-                if (enableTimeBinning_ && !currentSession_.eventsB.empty()) {
-                    // Use time binning from raw events
+                if (enableTimeBinning_) {
                     ApplyTimeBinning(currentSession_.eventsB, currentSession_.startTimestamp,
                                      plotTimesB, plotVelsB, timeBinMs_);
-                    // Apply time offset for sync view
-                    if (plotTimeOffset_ != 0.0f) {
-                        for (auto& t : plotTimesB) {
-                            t += plotTimeOffset_;
-                        }
-                    }
-                    // Apply smoothing on top if enabled
                     if (enableSmoothing_ && !plotTimesB.empty()) {
                         std::vector<double> smoothedTimes, smoothedVels;
                         if (smoothingMode_ == 0) {
@@ -531,25 +487,17 @@ void App::RenderPlotPanel() {
                         plotTimesB = std::move(smoothedTimes);
                         plotVelsB = std::move(smoothedVels);
                     }
-                } else if (!analysisResult_.mouseBData.empty()) {
-                    std::vector<double> timesB, velsB;
-                    timesB.reserve(analysisResult_.mouseBData.size());
-                    velsB.reserve(analysisResult_.mouseBData.size());
-
-                    for (const auto& p : analysisResult_.mouseBData) {
-                        timesB.push_back(p.timeMs + plotTimeOffset_);
-                        velsB.push_back(p.velocity);
-                    }
-
+                } else {
+                    // Use pre-computed live data
                     if (enableSmoothing_) {
                         if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(timesB, velsB, plotTimesB, plotVelsB, smoothingSamples_);
+                            ApplyMovingAverageSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingSamples_);
                         } else {
-                            ApplyTimeWindowSmoothing(timesB, velsB, plotTimesB, plotVelsB, smoothingTimeMs_);
+                            ApplyTimeWindowSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingTimeMs_);
                         }
                     } else {
-                        plotTimesB = std::move(timesB);
-                        plotVelsB = std::move(velsB);
+                        plotTimesB = liveTimesB_;
+                        plotVelsB = liveVelocitiesB_;
                     }
                 }
 
@@ -566,23 +514,6 @@ void App::RenderPlotPanel() {
                                     static_cast<int>(plotTimesB.size()));
                 }
             }
-
-            // Draw impact markers
-            if (analysisResult_.valid) {
-                double impactTimeA = 0.0;
-
-                // Find impact times from timestamps
-                for (const auto& p : analysisResult_.mouseAData) {
-                    // Approximate - just use the time from data
-                    impactTimeA = p.timeMs;
-                    break;
-                }
-
-                ImPlot::SetNextLineStyle(ImVec4(0.2f, 1.0f, 0.2f, 0.8f), 1.0f);
-                double impactX[2] = { impactTimeA, impactTimeA };
-                double impactY[2] = { 0, 1000 };
-                ImPlot::PlotLine("##ImpactA", impactX, impactY, 2);
-            }
         }
 
         ImPlot::EndPlot();
@@ -591,26 +522,6 @@ void App::RenderPlotPanel() {
 
 double App::CalculateVelocity(int32_t dx, int32_t dy) {
     return std::sqrt(static_cast<double>(dx * dx + dy * dy));
-}
-
-void App::RenderResultPanel() {
-    ImGui::Separator();
-    ImGui::Text("Analysis Result");
-
-    if (analysisResult_.valid) {
-        double latencyUs = analysisResult_.latencyDiffMicroseconds;
-        const char* comparison = latencyUs < 0 ? "FASTER" : "SLOWER";
-        ImVec4 color = latencyUs < 0 ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
-
-        ImGui::TextColored(color, "Mouse B is %.2f us %s than Mouse A",
-                          std::abs(latencyUs), comparison);
-
-        ImGui::Text("(%.3f ms)", std::abs(latencyUs) / 1000.0);
-    }
-    else if (!analysisResult_.errorMessage.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Analysis Error:");
-        ImGui::TextWrapped("%s", analysisResult_.errorMessage.c_str());
-    }
 }
 
 void App::RenderStatusBar() {
@@ -665,8 +576,6 @@ void App::StartRecording() {
     currentSession_.startTimestamp = timestamp.QuadPart;
     currentSession_.qpcFrequency = static_cast<double>(qpcFrequency_);
 
-    analysisResult_ = AnalysisResult{}; // Clear previous results
-
     // Clear live plotting data
     liveTimesA_.clear();
     liveVelocitiesA_.clear();
@@ -674,7 +583,7 @@ void App::StartRecording() {
     liveVelocitiesB_.clear();
 
     TransitionTo(AppState::Recording);
-    statusMessage_ = "Recording... Perform the bump test, then click Stop";
+    statusMessage_ = "Recording... Move both mice simultaneously, then click Stop";
 }
 
 void App::StopRecording() {
@@ -682,31 +591,11 @@ void App::StopRecording() {
     QueryPerformanceCounter(&timestamp);
     currentSession_.endTimestamp = timestamp.QuadPart;
 
-    statusMessage_ = std::format("Recording stopped. A={} events, B={} events. Analyzing...",
+    statusMessage_ = std::format("Recording stopped. A={} events, B={} events",
                                  currentSession_.eventsA.size(),
                                  currentSession_.eventsB.size());
 
-    // Auto-analyze after stopping
-    RunAnalysis();
-}
-
-void App::RunAnalysis() {
-    TransitionTo(AppState::Analyzing);
-    statusMessage_ = "Analyzing...";
-
-    analysisResult_ = analyzer_->Analyze(currentSession_);
-
-    if (analysisResult_.valid) {
-        double latencyUs = analysisResult_.latencyDiffMicroseconds;
-        const char* comparison = latencyUs < 0 ? "faster" : "slower";
-        statusMessage_ = std::format("Analysis complete: Mouse B is {:.2f} us {} than Mouse A",
-                                    std::abs(latencyUs), comparison);
-        TransitionTo(AppState::ShowingResults);
-    }
-    else {
-        statusMessage_ = "Analysis failed: " + analysisResult_.errorMessage;
-        TransitionTo(AppState::Ready);
-    }
+    TransitionTo(AppState::Ready);
 }
 
 void App::OnResize(int width, int height) {
