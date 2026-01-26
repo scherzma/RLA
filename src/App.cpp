@@ -56,7 +56,7 @@ void App::Update() {
                 // Assignment completed
                 if (deviceManager_->IsMouseAAssigned() && !deviceManager_->IsMouseBAssigned() &&
                     state_ == AppState::AssigningMouseA) {
-                    statusMessage_ = "Mouse A assigned! Now assign Mouse B";
+                    statusMessage_ = "Mouse A assigned - Ready to record (or assign Mouse B)";
                     TransitionTo(AppState::AssigningMouseB);
                     deviceManager_->StartAssigningMouseB();
                 }
@@ -233,7 +233,7 @@ void App::RenderDevicePanel() {
 void App::RenderControlPanel() {
     ImGui::Text("Recording Controls");
 
-    bool canRecord = deviceManager_->IsMouseAAssigned() && deviceManager_->IsMouseBAssigned();
+    bool canRecord = deviceManager_->IsMouseAAssigned() || deviceManager_->IsMouseBAssigned();
     bool isRecording = state_ == AppState::Recording;
 
     if (!canRecord && !isRecording) {
@@ -276,247 +276,388 @@ void App::RenderControlPanel() {
 }
 
 void App::RenderPlotPanel() {
-    ImGui::Text("Velocity Plot");
-
-    // Plot controls
-    ImGui::Checkbox("Smoothing", &enableSmoothing_);
-
-    if (enableSmoothing_) {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
-        const char* modes[] = { "Samples", "Time (ms)" };
-        ImGui::Combo("##SmoothMode", &smoothingMode_, modes, 2);
-
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80);
-        if (smoothingMode_ == 0) {
-            ImGui::SliderInt("##SmoothSamples", &smoothingSamples_, 2, 50, "%d pts");
-        }
-        else {
-            ImGui::SliderFloat("##SmoothTime", &smoothingTimeMs_, 0.1f, 10.0f, "%.1f ms");
-        }
-    }
-
-    // Y-axis scaling for Mouse B
+    // Plot mode selector
+    ImGui::Text("Plot Mode:");
     ImGui::SameLine();
-    ImGui::Checkbox("Scale B", &enableYScaleB_);
-    if (enableYScaleB_) {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
-        ImGui::SliderFloat("##YScaleB", &yScaleB_, 0.1f, 10.0f, "x%.2f");
-    }
+    ImGui::SetNextItemWidth(150);
+    const char* plotModes[] = { "Velocity", "Raw X/Y Deltas" };
+    ImGui::Combo("##PlotMode", &plotMode_, plotModes, 2);
+    ImGui::Separator();
 
-    // Time binning option (second row)
-    ImGui::Checkbox("Time Binning", &enableTimeBinning_);
-    if (enableTimeBinning_) {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
-        ImGui::SliderFloat("##BinSize", &timeBinMs_, 0.1f, 5.0f, "%.1f ms");
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Aggregates all events within each time window.\nReduces noise at high polling rates.");
-        }
-    }
-
-    // Calculate plot size - use available space minus room for result panel and status bar
-    float reservedHeight = 80.0f; // Space for result panel and status bar
+    // Calculate plot size
+    float reservedHeight = 80.0f;
     ImVec2 availableSize = ImGui::GetContentRegionAvail();
     float plotHeight = (std::max)(200.0f, availableSize.y - reservedHeight);
     ImVec2 plotSize(-1, plotHeight);
 
-    if (ImPlot::BeginPlot("Velocity vs Time", plotSize)) {
-        ImPlot::SetupAxes("Time (ms)", "Velocity (counts)");
-
-        // During recording, auto-fit X axis to show all data
-        if (state_ == AppState::Recording) {
-            // Find max time from live data
-            double maxTime = 100.0; // minimum range
-            if (!liveTimesA_.empty()) {
-                maxTime = (std::max)(maxTime, liveTimesA_.back());
+    if (plotMode_ == 0) {
+        // ==================== VELOCITY MODE ====================
+        // Velocity mode controls
+        ImGui::Checkbox("Smoothing", &enableSmoothing_);
+        if (enableSmoothing_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            const char* modes[] = { "Samples", "Time (ms)" };
+            ImGui::Combo("##SmoothMode", &smoothingMode_, modes, 2);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            if (smoothingMode_ == 0) {
+                ImGui::SliderInt("##SmoothSamples", &smoothingSamples_, 2, 50, "%d pts");
+            } else {
+                ImGui::SliderFloat("##SmoothTime", &smoothingTimeMs_, 0.1f, 10.0f, "%.1f ms");
             }
-            if (!liveTimesB_.empty()) {
-                maxTime = (std::max)(maxTime, liveTimesB_.back());
-            }
-            // Add 10% padding
-            ImPlot::SetupAxisLimits(ImAxis_X1, 0, maxTime * 1.1, ImPlotCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
-        }
-        else {
-            ImPlot::SetupAxisLimits(ImAxis_X1, 0, 1000, ImGuiCond_Once);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
         }
 
-        // During recording, show live data
-        if (state_ == AppState::Recording) {
-            // Plot live Mouse A data
-            if (!currentSession_.eventsA.empty()) {
+        ImGui::SameLine();
+        ImGui::Checkbox("Scale B", &enableYScaleB_);
+        if (enableYScaleB_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderFloat("##YScaleB", &yScaleB_, 0.1f, 10.0f, "x%.2f");
+        }
+
+        ImGui::Checkbox("Time Binning", &enableTimeBinning_);
+        if (enableTimeBinning_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderFloat("##BinSize", &timeBinMs_, 0.1f, 5.0f, "%.1f ms");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Aggregates all events within each time window.\nReduces noise at high polling rates.");
+            }
+        }
+
+        ImGui::Checkbox("Fill Gaps", &enableGapInterpolation_);
+        if (enableGapInterpolation_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderFloat("##GapThreshold", &gapThresholdMs_, 1.0f, 20.0f, "%.1f ms");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Fills time gaps with zero-velocity points.\nShows stationary periods as velocity=0 instead of gaps.");
+            }
+        }
+
+        ImGui::SameLine();
+        ImGui::Checkbox("Show Markers", &showDataPointMarkers_);
+        if (showDataPointMarkers_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::SliderFloat("##MarkerSize", &markerSize_, 1.0f, 8.0f, "%.0f px");
+        }
+
+        // Velocity plot
+        if (ImPlot::BeginPlot("Velocity vs Time", plotSize)) {
+            ImPlot::SetupAxes("Time (ms)", "Velocity (counts)");
+
+            double maxTime = 100.0;
+            if (state_ == AppState::Recording) {
+                if (!liveTimesA_.empty()) maxTime = (std::max)(maxTime, liveTimesA_.back());
+                if (!liveTimesB_.empty()) maxTime = (std::max)(maxTime, liveTimesB_.back());
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0, maxTime * 1.1, ImPlotCond_Always);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
+            } else {
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0, 1000, ImGuiCond_Once);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
+            }
+
+            // Get events to plot (works for both recording and stopped states)
+            const auto& eventsA = currentSession_.eventsA;
+            const auto& eventsB = currentSession_.eventsB;
+
+            // Plot Mouse A
+            if (!eventsA.empty()) {
                 std::vector<double> plotTimesA, plotVelsA;
 
+                // 1. Apply time binning FIRST if enabled (operates on raw events, sums deltas correctly)
                 if (enableTimeBinning_) {
-                    // Use time binning from raw events
-                    ApplyTimeBinning(currentSession_.eventsA, currentSession_.startTimestamp,
-                                     plotTimesA, plotVelsA, timeBinMs_);
-                    // Apply smoothing on top if enabled
-                    if (enableSmoothing_ && !plotTimesA.empty()) {
-                        std::vector<double> smoothedTimes, smoothedVels;
-                        if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(plotTimesA, plotVelsA, smoothedTimes, smoothedVels, smoothingSamples_);
-                        } else {
-                            ApplyTimeWindowSmoothing(plotTimesA, plotVelsA, smoothedTimes, smoothedVels, smoothingTimeMs_);
-                        }
-                        plotTimesA = std::move(smoothedTimes);
-                        plotVelsA = std::move(smoothedVels);
-                    }
-                } else if (enableSmoothing_) {
-                    if (smoothingMode_ == 0) {
-                        ApplyMovingAverageSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingSamples_);
-                    } else {
-                        ApplyTimeWindowSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingTimeMs_);
-                    }
+                    ApplyTimeBinning(eventsA, currentSession_.startTimestamp, plotTimesA, plotVelsA, timeBinMs_);
                 } else {
+                    // Use pre-calculated times/velocities
                     plotTimesA = liveTimesA_;
                     plotVelsA = liveVelocitiesA_;
                 }
 
+                // 2. Apply gap interpolation SECOND (fills gaps with zero-velocity points)
+                if (enableGapInterpolation_ && !plotTimesA.empty()) {
+                    std::vector<double> interpTimes, interpVels;
+                    InterpolateGaps(plotTimesA, plotVelsA, interpTimes, interpVels, gapThresholdMs_, gapSampleIntervalMs_);
+                    plotTimesA = std::move(interpTimes);
+                    plotVelsA = std::move(interpVels);
+                }
+
+                // 3. Apply smoothing LAST
+                if (enableSmoothing_ && !plotTimesA.empty()) {
+                    std::vector<double> smoothedTimes, smoothedVels;
+                    if (smoothingMode_ == 0) {
+                        ApplyMovingAverageSmoothing(plotTimesA, plotVelsA, smoothedTimes, smoothedVels, smoothingSamples_);
+                    } else {
+                        ApplyTimeWindowSmoothing(plotTimesA, plotVelsA, smoothedTimes, smoothedVels, smoothingTimeMs_);
+                    }
+                    plotTimesA = std::move(smoothedTimes);
+                    plotVelsA = std::move(smoothedVels);
+                }
+
                 if (!plotTimesA.empty()) {
                     ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
-                    ImPlot::PlotLine("Mouse A (Reference)", plotTimesA.data(), plotVelsA.data(),
-                                    static_cast<int>(plotTimesA.size()));
+                    if (showDataPointMarkers_) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 1.0f);
+                    }
+                    ImPlot::PlotLine("Mouse A (Reference)", plotTimesA.data(), plotVelsA.data(), static_cast<int>(plotTimesA.size()));
                 }
             }
 
-            // Plot live Mouse B data
-            if (!currentSession_.eventsB.empty()) {
+            // Plot Mouse B
+            if (!eventsB.empty()) {
                 std::vector<double> plotTimesB, plotVelsB;
 
+                // 1. Apply time binning FIRST if enabled (operates on raw events, sums deltas correctly)
                 if (enableTimeBinning_) {
-                    // Use time binning from raw events
-                    ApplyTimeBinning(currentSession_.eventsB, currentSession_.startTimestamp,
-                                     plotTimesB, plotVelsB, timeBinMs_);
-                    // Apply smoothing on top if enabled
-                    if (enableSmoothing_ && !plotTimesB.empty()) {
-                        std::vector<double> smoothedTimes, smoothedVels;
-                        if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(plotTimesB, plotVelsB, smoothedTimes, smoothedVels, smoothingSamples_);
-                        } else {
-                            ApplyTimeWindowSmoothing(plotTimesB, plotVelsB, smoothedTimes, smoothedVels, smoothingTimeMs_);
-                        }
-                        plotTimesB = std::move(smoothedTimes);
-                        plotVelsB = std::move(smoothedVels);
-                    }
-                } else if (enableSmoothing_) {
-                    if (smoothingMode_ == 0) {
-                        ApplyMovingAverageSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingSamples_);
-                    } else {
-                        ApplyTimeWindowSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingTimeMs_);
-                    }
+                    ApplyTimeBinning(eventsB, currentSession_.startTimestamp, plotTimesB, plotVelsB, timeBinMs_);
                 } else {
+                    // Use pre-calculated times/velocities
                     plotTimesB = liveTimesB_;
                     plotVelsB = liveVelocitiesB_;
                 }
 
-                // Apply Y scaling for Mouse B
-                if (enableYScaleB_ && yScaleB_ != 1.0f) {
-                    for (auto& v : plotVelsB) {
-                        v *= yScaleB_;
+                // 2. Apply gap interpolation SECOND (fills gaps with zero-velocity points)
+                if (enableGapInterpolation_ && !plotTimesB.empty()) {
+                    std::vector<double> interpTimes, interpVels;
+                    InterpolateGaps(plotTimesB, plotVelsB, interpTimes, interpVels, gapThresholdMs_, gapSampleIntervalMs_);
+                    plotTimesB = std::move(interpTimes);
+                    plotVelsB = std::move(interpVels);
+                }
+
+                // 3. Apply smoothing LAST
+                if (enableSmoothing_ && !plotTimesB.empty()) {
+                    std::vector<double> smoothedTimes, smoothedVels;
+                    if (smoothingMode_ == 0) {
+                        ApplyMovingAverageSmoothing(plotTimesB, plotVelsB, smoothedTimes, smoothedVels, smoothingSamples_);
+                    } else {
+                        ApplyTimeWindowSmoothing(plotTimesB, plotVelsB, smoothedTimes, smoothedVels, smoothingTimeMs_);
                     }
+                    plotTimesB = std::move(smoothedTimes);
+                    plotVelsB = std::move(smoothedVels);
+                }
+
+                if (enableYScaleB_ && yScaleB_ != 1.0f) {
+                    for (auto& v : plotVelsB) v *= yScaleB_;
                 }
 
                 if (!plotTimesB.empty()) {
                     ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
-                    ImPlot::PlotLine("Mouse B (Test)", plotTimesB.data(), plotVelsB.data(),
-                                    static_cast<int>(plotTimesB.size()));
+                    if (showDataPointMarkers_) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 1.0f);
+                    }
+                    ImPlot::PlotLine("Mouse B (Test)", plotTimesB.data(), plotVelsB.data(), static_cast<int>(plotTimesB.size()));
                 }
             }
+
+            ImPlot::EndPlot();
         }
-        else {
-            // Plot recorded session data (after recording stopped)
-            // Plot Mouse A data
-            if (!currentSession_.eventsA.empty()) {
-                std::vector<double> plotTimesA, plotVelsA;
-
-                if (enableTimeBinning_) {
-                    ApplyTimeBinning(currentSession_.eventsA, currentSession_.startTimestamp,
-                                     plotTimesA, plotVelsA, timeBinMs_);
-                    if (enableSmoothing_ && !plotTimesA.empty()) {
-                        std::vector<double> smoothedTimes, smoothedVels;
-                        if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(plotTimesA, plotVelsA, smoothedTimes, smoothedVels, smoothingSamples_);
-                        } else {
-                            ApplyTimeWindowSmoothing(plotTimesA, plotVelsA, smoothedTimes, smoothedVels, smoothingTimeMs_);
-                        }
-                        plotTimesA = std::move(smoothedTimes);
-                        plotVelsA = std::move(smoothedVels);
-                    }
-                } else {
-                    // Use pre-computed live data
-                    if (enableSmoothing_) {
-                        if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingSamples_);
-                        } else {
-                            ApplyTimeWindowSmoothing(liveTimesA_, liveVelocitiesA_, plotTimesA, plotVelsA, smoothingTimeMs_);
-                        }
-                    } else {
-                        plotTimesA = liveTimesA_;
-                        plotVelsA = liveVelocitiesA_;
-                    }
-                }
-
-                if (!plotTimesA.empty()) {
-                    ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 2.0f);
-                    ImPlot::PlotLine("Mouse A (Reference)", plotTimesA.data(), plotVelsA.data(),
-                                    static_cast<int>(plotTimesA.size()));
-                }
-            }
-
-            // Plot Mouse B data
-            if (!currentSession_.eventsB.empty()) {
-                std::vector<double> plotTimesB, plotVelsB;
-
-                if (enableTimeBinning_) {
-                    ApplyTimeBinning(currentSession_.eventsB, currentSession_.startTimestamp,
-                                     plotTimesB, plotVelsB, timeBinMs_);
-                    if (enableSmoothing_ && !plotTimesB.empty()) {
-                        std::vector<double> smoothedTimes, smoothedVels;
-                        if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(plotTimesB, plotVelsB, smoothedTimes, smoothedVels, smoothingSamples_);
-                        } else {
-                            ApplyTimeWindowSmoothing(plotTimesB, plotVelsB, smoothedTimes, smoothedVels, smoothingTimeMs_);
-                        }
-                        plotTimesB = std::move(smoothedTimes);
-                        plotVelsB = std::move(smoothedVels);
-                    }
-                } else {
-                    // Use pre-computed live data
-                    if (enableSmoothing_) {
-                        if (smoothingMode_ == 0) {
-                            ApplyMovingAverageSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingSamples_);
-                        } else {
-                            ApplyTimeWindowSmoothing(liveTimesB_, liveVelocitiesB_, plotTimesB, plotVelsB, smoothingTimeMs_);
-                        }
-                    } else {
-                        plotTimesB = liveTimesB_;
-                        plotVelsB = liveVelocitiesB_;
-                    }
-                }
-
-                // Apply Y scaling for Mouse B
-                if (enableYScaleB_ && yScaleB_ != 1.0f) {
-                    for (auto& v : plotVelsB) {
-                        v *= yScaleB_;
-                    }
-                }
-
-                if (!plotTimesB.empty()) {
-                    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 2.0f);
-                    ImPlot::PlotLine("Mouse B (Test)", plotTimesB.data(), plotVelsB.data(),
-                                    static_cast<int>(plotTimesB.size()));
-                }
+    }
+    else {
+        // ==================== RAW X/Y DELTAS MODE ====================
+        // Same controls as velocity mode
+        ImGui::Checkbox("Smoothing", &enableSmoothing_);
+        if (enableSmoothing_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            const char* modes[] = { "Samples", "Time (ms)" };
+            ImGui::Combo("##SmoothModeXY", &smoothingMode_, modes, 2);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            if (smoothingMode_ == 0) {
+                ImGui::SliderInt("##SmoothSamplesXY", &smoothingSamples_, 2, 50, "%d pts");
+            } else {
+                ImGui::SliderFloat("##SmoothTimeXY", &smoothingTimeMs_, 0.1f, 10.0f, "%.1f ms");
             }
         }
 
-        ImPlot::EndPlot();
+        ImGui::Checkbox("Time Binning", &enableTimeBinning_);
+        if (enableTimeBinning_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderFloat("##BinSizeXY", &timeBinMs_, 0.1f, 5.0f, "%.1f ms");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Aggregates all deltas within each time window (sums X and Y separately).");
+            }
+        }
+
+        ImGui::Checkbox("Fill Gaps", &enableGapInterpolation_);
+        if (enableGapInterpolation_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderFloat("##GapThresholdXY", &gapThresholdMs_, 1.0f, 20.0f, "%.1f ms");
+        }
+
+        ImGui::SameLine();
+        ImGui::Checkbox("Show Markers", &showDataPointMarkers_);
+        if (showDataPointMarkers_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::SliderFloat("##MarkerSizeXY", &markerSize_, 1.0f, 8.0f, "%.0f px");
+        }
+
+        // Raw X/Y plot
+        if (ImPlot::BeginPlot("Raw X/Y Deltas vs Time", plotSize)) {
+            ImPlot::SetupAxes("Time (ms)", "Delta (counts)");
+
+            double maxTime = 100.0;
+            if (state_ == AppState::Recording) {
+                if (!liveTimesA_.empty()) maxTime = (std::max)(maxTime, liveTimesA_.back());
+                if (!liveTimesB_.empty()) maxTime = (std::max)(maxTime, liveTimesB_.back());
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0, maxTime * 1.1, ImPlotCond_Always);
+            } else {
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0, 1000, ImGuiCond_Once);
+            }
+            ImPlot::SetupAxisLimits(ImAxis_Y1, -50, 50, ImGuiCond_Once);
+
+            const auto& eventsA = currentSession_.eventsA;
+            const auto& eventsB = currentSession_.eventsB;
+
+            // Helper lambda to apply processing to X/Y data
+            auto processXYData = [this](const std::vector<MouseEvent>& events,
+                                        std::vector<double>& outTimes,
+                                        std::vector<double>& outX,
+                                        std::vector<double>& outY) {
+                if (events.empty()) return;
+
+                // Extract raw data
+                std::vector<double> rawTimes, rawX, rawY;
+                rawTimes.reserve(events.size());
+                rawX.reserve(events.size());
+                rawY.reserve(events.size());
+
+                for (const auto& event : events) {
+                    double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / qpcFrequency_;
+                    rawTimes.push_back(timeMs);
+                    rawX.push_back(static_cast<double>(event.deltaX));
+                    rawY.push_back(static_cast<double>(event.deltaY));
+                }
+
+                // 1. Apply gap interpolation FIRST (on raw data)
+                if (enableGapInterpolation_ && !rawTimes.empty()) {
+                    std::vector<double> interpTimes, interpX, interpY;
+                    for (size_t i = 0; i < rawTimes.size(); ++i) {
+                        if (i > 0) {
+                            double gap = rawTimes[i] - rawTimes[i - 1];
+                            if (gap > gapThresholdMs_) {
+                                double t = rawTimes[i - 1] + gapSampleIntervalMs_;
+                                while (t < rawTimes[i] - gapSampleIntervalMs_ / 2.0) {
+                                    interpTimes.push_back(t);
+                                    interpX.push_back(0.0);
+                                    interpY.push_back(0.0);
+                                    t += gapSampleIntervalMs_;
+                                }
+                            }
+                        }
+                        interpTimes.push_back(rawTimes[i]);
+                        interpX.push_back(rawX[i]);
+                        interpY.push_back(rawY[i]);
+                    }
+                    rawTimes = std::move(interpTimes);
+                    rawX = std::move(interpX);
+                    rawY = std::move(interpY);
+                }
+
+                // 2. Apply time binning SECOND (after gap interpolation)
+                if (enableTimeBinning_ && !rawTimes.empty()) {
+                    std::vector<double> binnedTimes, binnedX, binnedY;
+                    size_t i = 0;
+                    while (i < rawTimes.size()) {
+                        double binStart = std::floor(rawTimes[i] / timeBinMs_) * timeBinMs_;
+                        double binEnd = binStart + timeBinMs_;
+
+                        double sumX = 0, sumY = 0;
+                        int count = 0;
+
+                        while (i < rawTimes.size() && rawTimes[i] < binEnd) {
+                            sumX += rawX[i];
+                            sumY += rawY[i];
+                            ++count;
+                            ++i;
+                        }
+
+                        if (count > 0) {
+                            binnedTimes.push_back(binStart + timeBinMs_ / 2.0);
+                            binnedX.push_back(sumX);
+                            binnedY.push_back(sumY);
+                        }
+                    }
+                    rawTimes = std::move(binnedTimes);
+                    rawX = std::move(binnedX);
+                    rawY = std::move(binnedY);
+                }
+
+                // 3. Apply smoothing LAST
+                if (enableSmoothing_ && !rawTimes.empty()) {
+                    std::vector<double> smoothedTimes, smoothedX, smoothedY;
+                    if (smoothingMode_ == 0) {
+                        ApplyMovingAverageSmoothing(rawTimes, rawX, smoothedTimes, smoothedX, smoothingSamples_);
+                        std::vector<double> dummy;
+                        ApplyMovingAverageSmoothing(rawTimes, rawY, dummy, smoothedY, smoothingSamples_);
+                    } else {
+                        ApplyTimeWindowSmoothing(rawTimes, rawX, smoothedTimes, smoothedX, smoothingTimeMs_);
+                        std::vector<double> dummy;
+                        ApplyTimeWindowSmoothing(rawTimes, rawY, dummy, smoothedY, smoothingTimeMs_);
+                    }
+                    rawTimes = std::move(smoothedTimes);
+                    rawX = std::move(smoothedX);
+                    rawY = std::move(smoothedY);
+                }
+
+                outTimes = std::move(rawTimes);
+                outX = std::move(rawX);
+                outY = std::move(rawY);
+            };
+
+            // Plot Mouse A - X and Y deltas
+            if (!eventsA.empty()) {
+                std::vector<double> timesA, deltasXA, deltasYA;
+                processXYData(eventsA, timesA, deltasXA, deltasYA);
+
+                if (!timesA.empty()) {
+                    ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 1.5f);
+                    if (showDataPointMarkers_) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 1.0f);
+                    }
+                    ImPlot::PlotLine("Mouse A - X", timesA.data(), deltasXA.data(), static_cast<int>(timesA.size()));
+
+                    ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.9f, 0.9f, 1.0f), 1.5f);
+                    if (showDataPointMarkers_) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(0.2f, 0.9f, 0.9f, 1.0f), 1.0f);
+                    }
+                    ImPlot::PlotLine("Mouse A - Y", timesA.data(), deltasYA.data(), static_cast<int>(timesA.size()));
+                }
+            }
+
+            // Plot Mouse B - X and Y deltas
+            if (!eventsB.empty()) {
+                std::vector<double> timesB, deltasXB, deltasYB;
+                processXYData(eventsB, timesB, deltasXB, deltasYB);
+
+                if (!timesB.empty()) {
+                    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 1.5f);
+                    if (showDataPointMarkers_) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 1.0f);
+                    }
+                    ImPlot::PlotLine("Mouse B - X", timesB.data(), deltasXB.data(), static_cast<int>(timesB.size()));
+
+                    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), 1.5f);
+                    if (showDataPointMarkers_) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(1.0f, 0.7f, 0.2f, 1.0f), 1.0f);
+                    }
+                    ImPlot::PlotLine("Mouse B - Y", timesB.data(), deltasYB.data(), static_cast<int>(timesB.size()));
+                }
+            }
+
+            ImPlot::EndPlot();
+        }
     }
 }
 
@@ -804,6 +945,64 @@ void App::ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startT
             // Calculate velocity from summed deltas
             outVelocities.push_back(std::sqrt(static_cast<double>(sumDx * sumDx + sumDy * sumDy)));
         }
+    }
+}
+
+void App::ApplyTimeBinningOnArrays(const std::vector<double>& times, const std::vector<double>& values,
+                                   std::vector<double>& outTimes, std::vector<double>& outValues, double binMs) {
+    outTimes.clear();
+    outValues.clear();
+
+    if (times.empty() || binMs <= 0) return;
+
+    size_t i = 0;
+    while (i < times.size()) {
+        double binStart = std::floor(times[i] / binMs) * binMs;
+        double binEnd = binStart + binMs;
+
+        double sumValues = 0;
+        int count = 0;
+
+        while (i < times.size() && times[i] < binEnd) {
+            sumValues += values[i];
+            ++count;
+            ++i;
+        }
+
+        if (count > 0) {
+            outTimes.push_back(binStart + binMs / 2.0);
+            outValues.push_back(sumValues);  // Sum values within bin (appropriate for velocities and deltas)
+        }
+    }
+}
+
+void App::InterpolateGaps(const std::vector<double>& times, const std::vector<double>& values,
+                          std::vector<double>& outTimes, std::vector<double>& outValues,
+                          double gapThresholdMs, double sampleIntervalMs) {
+    outTimes.clear();
+    outValues.clear();
+
+    if (times.empty()) return;
+
+    for (size_t i = 0; i < times.size(); ++i) {
+        // Check for gap before this point (except for first point)
+        if (i > 0) {
+            double gap = times[i] - times[i - 1];
+            if (gap > gapThresholdMs) {
+                // Insert zero-velocity points to fill the gap
+                // Start a bit after the previous point and end a bit before this point
+                double t = times[i - 1] + sampleIntervalMs;
+                while (t < times[i] - sampleIntervalMs / 2.0) {
+                    outTimes.push_back(t);
+                    outValues.push_back(0.0);
+                    t += sampleIntervalMs;
+                }
+            }
+        }
+
+        // Add the actual data point
+        outTimes.push_back(times[i]);
+        outValues.push_back(values[i]);
     }
 }
 

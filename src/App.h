@@ -99,15 +99,35 @@ private:
     bool enableTimeBinning_ = false;
     float timeBinMs_ = 1.0f;  // Bin size in milliseconds
 
-    // Time binning helper function
+    // Gap interpolation options (fills gaps with zero-velocity points)
+    bool enableGapInterpolation_ = true;  // Enabled by default
+    float gapThresholdMs_ = 5.0f;  // Gaps larger than this are filled with zeros
+    float gapSampleIntervalMs_ = 1.0f;  // Interval between interpolated zero points
+
+    // Data point markers option
+    bool showDataPointMarkers_ = false;  // Disabled by default
+    float markerSize_ = 3.0f;  // Size of the marker dots
+
+    // Plot mode: 0 = Velocity, 1 = Raw X/Y Deltas
+    int plotMode_ = 0;
+
+    // Time binning helper functions
     void ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startTimestamp,
                           std::vector<double>& outTimes, std::vector<double>& outVelocities, double binMs);
+    // Time binning on already-extracted times/values arrays (sums values within each bin)
+    void ApplyTimeBinningOnArrays(const std::vector<double>& times, const std::vector<double>& values,
+                                  std::vector<double>& outTimes, std::vector<double>& outValues, double binMs);
 
     // Smoothing helper functions
     void ApplyMovingAverageSmoothing(const std::vector<double>& times, const std::vector<double>& values,
                                      std::vector<double>& outTimes, std::vector<double>& outValues, int windowSize);
     void ApplyTimeWindowSmoothing(const std::vector<double>& times, const std::vector<double>& values,
                                   std::vector<double>& outTimes, std::vector<double>& outValues, double windowMs);
+
+    // Gap interpolation helper function (fills time gaps with zero-velocity points)
+    void InterpolateGaps(const std::vector<double>& times, const std::vector<double>& values,
+                         std::vector<double>& outTimes, std::vector<double>& outValues,
+                         double gapThresholdMs, double sampleIntervalMs);
 
     // Status message
     std::string statusMessage_;
