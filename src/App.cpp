@@ -35,8 +35,8 @@ bool App::Initialize(HWND hwnd, int width, int height) {
         return false;
     }
 
-    // Initialize input engine
-    if (!inputEngine_->Initialize(hwnd)) {
+    // Initialize input engine (creates its own dedicated thread for accurate timestamps)
+    if (!inputEngine_->Initialize()) {
         statusMessage_ = "Failed to initialize input engine";
         return false;
     }
@@ -742,12 +742,6 @@ void App::StopRecording() {
 void App::OnResize(int width, int height) {
     if (renderer_) {
         renderer_->OnResize(width, height);
-    }
-}
-
-void App::OnRawInput(LPARAM lParam) {
-    if (inputEngine_) {
-        inputEngine_->ProcessRawInput(lParam);
     }
 }
 

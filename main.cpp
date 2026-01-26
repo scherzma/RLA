@@ -25,12 +25,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     switch (msg) {
-        case WM_INPUT:
-            if (g_app) {
-                g_app->OnRawInput(lParam);
-            }
-            // Must call DefWindowProc for WM_INPUT
-            return DefWindowProc(hwnd, msg, wParam, lParam);
+        // Note: WM_INPUT is now handled by InputEngine's dedicated thread
+        // for accurate timestamps independent of VSync
 
         case WM_SIZE:
             if (wParam != SIZE_MINIMIZED && g_app) {

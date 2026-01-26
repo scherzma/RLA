@@ -29,9 +29,6 @@ public:
     // Handle window resize
     void OnResize(int width, int height);
 
-    // Process raw input message
-    void OnRawInput(LPARAM lParam);
-
     // Check if app should quit
     bool ShouldQuit() const { return shouldQuit_; }
 

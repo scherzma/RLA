@@ -19,10 +19,10 @@ public:
     InputEngine();
     ~InputEngine();
 
-    // Initialize raw input with given window handle
-    bool Initialize(HWND hwnd);
+    // Initialize the input engine (creates dedicated input thread)
+    bool Initialize();
 
-    // Start/stop the high-priority input thread
+    // Start/stop recording events
     bool Start();
     void Stop();
 
@@ -43,18 +43,29 @@ public:
     double GetEventRateB() const { return eventRateB_; }
     void UpdateEventRates(size_t eventsA, size_t eventsB);
 
-    // Process WM_INPUT message (call from window procedure)
+private:
+    // Input thread function - runs dedicated message loop
+    void InputThreadFunc();
+
+    // Window procedure for the hidden input window
+    static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+    // Process raw input message (called on input thread)
     void ProcessRawInput(LPARAM lParam);
 
-private:
-    void InputThreadFunc(std::stop_token stopToken);
+    // Register/unregister raw input for the hidden window
     bool RegisterRawInput(HWND hwnd);
     void UnregisterRawInput();
 
-    HWND hwnd_ = nullptr;
-    std::jthread inputThread_;
+    // Hidden window for raw input (owned by input thread)
+    HWND inputHwnd_ = nullptr;
+
+    // Input thread
+    std::thread inputThread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> initialized_{false};
+    std::atomic<bool> threadReady_{false};
+    std::atomic<bool> shouldStop_{false};
 
     RingBuffer<MouseEvent, RING_BUFFER_SIZE> eventBuffer_;
 

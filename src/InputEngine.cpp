@@ -4,6 +4,9 @@
 
 namespace RLA {
 
+// Static pointer for WndProc to access the instance
+static InputEngine* g_inputEngineInstance = nullptr;
+
 InputEngine::InputEngine() {
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
@@ -12,22 +15,140 @@ InputEngine::InputEngine() {
 
 InputEngine::~InputEngine() {
     Stop();
-    if (initialized_) {
-        UnregisterRawInput();
+
+    // Signal thread to stop
+    shouldStop_ = true;
+
+    // Post quit message to the input thread's message loop
+    if (inputHwnd_) {
+        PostMessage(inputHwnd_, WM_QUIT, 0, 0);
     }
+
+    // Wait for thread to finish
+    if (inputThread_.joinable()) {
+        inputThread_.join();
+    }
+
+    g_inputEngineInstance = nullptr;
 }
 
-bool InputEngine::Initialize(HWND hwnd) {
+bool InputEngine::Initialize() {
     if (initialized_) return true;
 
-    hwnd_ = hwnd;
+    g_inputEngineInstance = this;
 
-    if (!RegisterRawInput(hwnd)) {
+    // Start the input thread - it will create its own window and message loop
+    inputThread_ = std::thread(&InputEngine::InputThreadFunc, this);
+
+    // Wait for the thread to be ready (window created and raw input registered)
+    while (!threadReady_.load() && !shouldStop_.load()) {
+        Sleep(1);
+    }
+
+    if (shouldStop_) {
         return false;
     }
 
     initialized_ = true;
     return true;
+}
+
+LRESULT CALLBACK InputEngine::InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_INPUT:
+            if (g_inputEngineInstance) {
+                g_inputEngineInstance->ProcessRawInput(lParam);
+            }
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+
+        default:
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+    }
+}
+
+void InputEngine::InputThreadFunc() {
+    // Set thread priority for time-critical input handling
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    // Register window class for the hidden input window
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = InputWndProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.lpszClassName = L"RLA_InputWindowClass";
+
+    if (!RegisterClassExW(&wc)) {
+        // Class might already be registered, that's okay
+        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            shouldStop_ = true;
+            threadReady_ = true;
+            return;
+        }
+    }
+
+    // Create a message-only window (HWND_MESSAGE parent means it's invisible and doesn't appear in taskbar)
+    inputHwnd_ = CreateWindowExW(
+        0,
+        L"RLA_InputWindowClass",
+        L"RLA Input",
+        0,
+        0, 0, 0, 0,
+        HWND_MESSAGE,  // Message-only window
+        nullptr,
+        GetModuleHandle(nullptr),
+        nullptr
+    );
+
+    if (!inputHwnd_) {
+        shouldStop_ = true;
+        threadReady_ = true;
+        return;
+    }
+
+    // Register for raw input on this window
+    if (!RegisterRawInput(inputHwnd_)) {
+        DestroyWindow(inputHwnd_);
+        inputHwnd_ = nullptr;
+        shouldStop_ = true;
+        threadReady_ = true;
+        return;
+    }
+
+    // Signal that we're ready
+    threadReady_ = true;
+
+    // Run the message loop for this thread
+    // This loop is NOT blocked by VSync - it runs as fast as messages arrive
+    MSG msg{};
+    while (!shouldStop_.load()) {
+        // Use GetMessage for efficient waiting (doesn't spin CPU)
+        // But check for quit periodically
+        BOOL result = GetMessage(&msg, nullptr, 0, 0);
+
+        if (result == 0) {
+            // WM_QUIT received
+            break;
+        }
+        else if (result == -1) {
+            // Error
+            break;
+        }
+        else {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    // Cleanup
+    UnregisterRawInput();
+    if (inputHwnd_) {
+        DestroyWindow(inputHwnd_);
+        inputHwnd_ = nullptr;
+    }
 }
 
 bool InputEngine::RegisterRawInput(HWND hwnd) {
@@ -69,6 +190,12 @@ void InputEngine::Stop() {
 void InputEngine::ProcessRawInput(LPARAM lParam) {
     if (!running_) return;
 
+    // Get timestamp IMMEDIATELY - this is the key improvement!
+    // Since we're on a dedicated thread not blocked by VSync,
+    // this timestamp is as close to the actual event time as possible.
+    LARGE_INTEGER timestamp;
+    QueryPerformanceCounter(&timestamp);
+
     UINT size = 0;
     GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
 
@@ -85,10 +212,6 @@ void InputEngine::ProcessRawInput(LPARAM lParam) {
     if (raw->header.dwType != RIM_TYPEMOUSE) {
         return;
     }
-
-    // Get high-precision timestamp
-    LARGE_INTEGER timestamp;
-    QueryPerformanceCounter(&timestamp);
 
     MouseEvent event{};
     event.deviceHandle = raw->header.hDevice;
@@ -141,20 +264,6 @@ void InputEngine::UpdateEventRates(size_t eventsA, size_t eventsB) {
         lastRateUpdateTime_ = now.QuadPart;
         lastEventCountA_ = eventsA;
         lastEventCountB_ = eventsB;
-    }
-}
-
-// Note: The high-priority thread approach is replaced with direct WM_INPUT processing
-// which is more reliable on Windows. The thread function below is kept for reference
-// but the actual input processing happens in ProcessRawInput() called from WndProc.
-void InputEngine::InputThreadFunc(std::stop_token stopToken) {
-    // Set thread priority for time-critical input handling
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-
-    while (!stopToken.stop_requested() && running_) {
-        // In the WM_INPUT model, we don't need a busy loop here
-        // The main message pump handles input delivery
-        Sleep(1);
     }
 }
 
