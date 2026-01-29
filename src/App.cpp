@@ -312,8 +312,13 @@ void App::RenderPlotPanel() {
         ImGui::Checkbox("Scale B", &enableYScaleB_);
         if (enableYScaleB_) {
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(100);
-            ImGui::SliderFloat("##YScaleB", &yScaleB_, 0.1f, 10.0f, "x%.2f");
+            ImGui::SetNextItemWidth(120);
+            ImGui::SliderFloat("##YScaleB", &yScaleB_, 0.01f, 100.0f, "x%.3f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            if (ImGui::InputFloat("##YScaleBInput", &yScaleB_, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue)) {
+                yScaleB_ = std::clamp(yScaleB_, 0.01f, 100.0f);
+            }
         }
 
         ImGui::Checkbox("Time Binning", &enableTimeBinning_);
