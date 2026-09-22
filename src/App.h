@@ -141,7 +141,7 @@ private:
     std::vector<double> liveVelocitiesB_;
 
     // Smoothing options
-    bool enableSmoothing_ = false;
+    bool enableSmoothing_ = true;
     int smoothingMode_ = 0;  // 0 = by samples, 1 = by time
     int smoothingSamples_ = 3;  // Number of samples for moving average
     float smoothingTimeMs_ = 1.0f;  // Time window in ms
@@ -168,14 +168,31 @@ private:
     double lastTimingUpdate_ = -1.0;
 
     // Time binning options (aggregates events into time windows)
-    bool enableTimeBinning_ = false;
-    float timeBinMs_ = 1.0f;  // Bin size in milliseconds
+    bool enableTimeBinning_ = true;
+    float timeBinMs_ = 2.0f;  // Bin size in milliseconds
     bool timeWeightedBins_ = true;
 
     // Gap interpolation options (fills gaps with zero-velocity points)
     bool enableGapInterpolation_ = true;  // Enabled by default
     float gapThresholdMs_ = 5.0f;  // Gaps larger than this are filled with zeros
     float gapSampleIntervalMs_ = 1.0f;  // Interval between interpolated zero points
+
+    struct MovementKey {
+        uint64_t revision;
+        size_t events;
+        bool binning, weighted, fillGaps, smoothing;
+        float binMs, gapMs, gapStep, smoothMs, scale;
+        int smoothMode, samples;
+        bool operator==(const MovementKey&) const = default;
+    };
+    struct MovementCache {
+        MovementKey key{};
+        bool valid=false;
+        size_t builds=0;
+        std::vector<double> times, values;
+    };
+    MovementCache movementA_, movementB_;
+    const MovementCache& PrepareMovementPlot(bool mouseB);
 
     // Data point markers option
     bool showDataPointMarkers_ = false;  // Disabled by default

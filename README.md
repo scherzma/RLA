@@ -31,6 +31,10 @@ Every accepted recording is kept in `%LOCALAPPDATA%\RLA\Runs`. Profiles, interfa
 
 ## Plot and capture details
 
+Movement plots start in a smoothed comparison view: common 2 ms time-weighted bins and a centered three-bin average. **Smooth comparison** restores these settings. **Raw reports** disables binning, smoothing, and gap filling. The controls remain visible so the displayed processing is explicit. These settings affect the display only; saved counts and automatic latency analysis are unchanged.
+
+Prepared movement curves are cached until their recording, event count, or processing settings change. Panning and zooming a stopped recording reuse the cached curves. The UI uses a high-resolution waitable timer with a 120 Hz update limit, instead of the coarse 16 ms tick-based limiter. Actual display rate still depends on rendering and the monitor. The capture thread does not use this timer. See [Microsoft: high-resolution waitable timers](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw).
+
 Auto Scale B checks direction and movement shape in separate sections. It excludes weak matches, idle sections, and conflicting scale estimates. It needs at least three matching sections. A failed fit leaves the current scale unchanged.
 
 The fit uses common time bins, normally 2 ms. Slower event streams use larger bins. Each section spans at least 50 ms and eight bins. Direction checks reject unrelated movement. Magnitude correlation checks the shape shown in the movement plot. The scale for each section is the ratio of summed movement magnitudes; small differences between the mice's axes do not reduce this ratio. The fit checks offsets up to 10 ms in whole bins. These offsets only help find matching movement; no cross-mouse time shift is applied to the plots. The median scale from the largest consistent group is used. That group must contain at least two thirds of the accepted estimates and at least three sections. This is a heuristic, not a device calibration or a latency measurement. A scalar multiplier cannot correct an axis rotation in the X/Y plot.

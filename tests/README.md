@@ -33,4 +33,6 @@ Mouse-library checks cover profile names, wired/wireless links, separate polling
 
 The capture regression reads the report removed by `GetMessageW` through `GetRawInputData` before testing buffered reads. Run `./x64/Regression/Regression.exe --soak 360 [session.json]` for a six-minute test with a hidden native window, real rendering, and the capture thread. It loads the optional recording (or synthetic movement), fits scale and latency, resizes the render target, and checks capture-thread responsiveness every 30 seconds. It does not add library results or inject physical USB reports.
 
+Frame-pacing checks print the old and new mean wait intervals on the current system. Movement-cache checks require reuse across unchanged frames, invalidation after scaling or loading an equal-length recording, exact raw-mode values, and unchanged saved events. Native renderer checks remain enabled.
+
 Latency regression checks also reduce movement counts, add timestamp jitter, and combine occasional reports. All feature modes must retain known positive, zero, and negative differences. Native renderer checks require deferred/coalesced resizes and a supported nonblocking presentation call. The monitor test keeps a window responsive inside a message loop without completing frames; the log must still report the stopped frame progress.

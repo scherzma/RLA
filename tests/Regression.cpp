@@ -1,6 +1,7 @@
 #include "src/App.h"
 #include "src/WindowMessages.h"
 #include "src/ResponsivenessMonitor.h"
+#include "src/FramePacer.h"
 #include <nlohmann/json.hpp>
 #include <cmath>
 #include <fstream>
@@ -16,6 +17,32 @@
 
 static void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+static void RunFramePacingChecks() {
+    using Clock=std::chrono::steady_clock;
+    const auto oldStart=Clock::now();
+    for (int i=0;i<24;++i) {
+        const auto deadline=GetTickCount64()+16;
+        for (;;) {
+            const auto now=GetTickCount64();
+            if (now>=deadline) break;
+            MsgWaitForMultipleObjectsEx(0,nullptr,static_cast<DWORD>(deadline-now),QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+            MSG msg{}; while (PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
+        }
+    }
+    const double oldMs=std::chrono::duration<double,std::milli>(Clock::now()-oldStart).count()/24;
+    RLA::FramePacer pacer; const auto start=Clock::now();
+    for (int i=0;i<24;++i) {
+        pacer.BeginFrame();
+        while (!pacer.Ready()) {
+            pacer.Wait();
+            MSG msg{}; while (PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
+        }
+    }
+    const double ms=std::chrono::duration<double,std::milli>(Clock::now()-start).count()/24;
+    Check(ms>=8,"Frame pacing must not run before its deadline");
+    std::cout<<"UI pacing mean interval: old="<<oldMs<<" ms, new="<<ms<<" ms.\n";
 }
 
 namespace RLA {
@@ -281,6 +308,27 @@ struct InputEngineRegressionAccess {
 };
 
 struct AppRegressionAccess {
+    static void CheckMovementCache(const RecordingSession& session) {
+        App app; app.currentSession_=session; app.RebuildPlotData();
+        const auto original=MouseLibrary::RecordingKey(app.currentSession_);
+        const auto& curve=app.PrepareMovementPlot(false);
+        Check(!curve.times.empty() && curve.times.size()<session.eventsA.size(),"Default comparison must use common time bins");
+        const auto builds=curve.builds;
+        for (int i=0;i<100;++i) app.PrepareMovementPlot(false);
+        Check(app.movementA_.builds==builds,"Unchanged movement curves must not be rebuilt while panning");
+        app.enableTimeBinning_=false; app.enableSmoothing_=false; app.enableGapInterpolation_=false;
+        const auto& raw=app.PrepareMovementPlot(false);
+        Check(raw.times==app.liveTimesA_ && raw.values==app.liveVelocitiesA_,"Raw reports must remain available without smoothing");
+        app.enableYScaleB_=true; app.yScaleB_=2;
+        const auto& b=app.PrepareMovementPlot(true);
+        Check(b.values.front()==2*app.liveVelocitiesB_.front(),"Cached B must use the current scale");
+        app.yScaleB_=3;
+        Check(app.PrepareMovementPlot(true).values.front()==3*app.liveVelocitiesB_.front(),"Scale changes must invalidate cached B");
+        Check(MouseLibrary::RecordingKey(app.currentSession_)==original,"Display preparation must preserve recorded events");
+        auto changed=session; changed.eventsA[0].deltaX+=100;
+        app.currentSession_=changed; app.RebuildPlotData();
+        Check(app.PrepareMovementPlot(false).values.front()==app.liveVelocitiesA_.front(),"Loading an equal-length recording must invalidate the cache");
+    }
     static void RunLibrary(RecordingSession session, const std::filesystem::path& directory) {
         App app;
         app.deviceManager_=std::make_unique<DeviceManager>(); app.dataStore_=std::make_unique<DataStore>();
@@ -1058,6 +1106,8 @@ int main(int argc, char** argv) {
         }
         RLA::InputEngineRegressionAccess::Run();
         RunWindowMessageChecks();
+        RunFramePacingChecks();
+        RLA::AppRegressionAccess::CheckMovementCache(LatencySession());
         RLA::RendererRegressionAccess::Run();
         RunLatencyChecks();
         RunMouseLibraryChecks();

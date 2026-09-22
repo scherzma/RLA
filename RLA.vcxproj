@@ -156,6 +156,7 @@
     <ClInclude Include="src\Autosave.h" />
     <ClInclude Include="src\MouseLibrary.h" />
     <ClInclude Include="src\ResponsivenessMonitor.h" />
+    <ClInclude Include="src\FramePacer.h" />
     <ClInclude Include="src\DataStore.h" />
     <ClInclude Include="src\DeviceManager.h" />
     <ClInclude Include="src\InputEngine.h" />

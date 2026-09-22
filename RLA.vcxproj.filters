@@ -51,6 +51,7 @@
     <ClInclude Include="src\Autosave.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\MouseLibrary.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\ResponsivenessMonitor.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\FramePacer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\DataStore.h">
       <Filter>Header Files</Filter>
     </ClInclude>
