@@ -24,6 +24,12 @@ App::~App() {
     if (state_ == AppState::Recording && inputEngine_ && deviceManager_) StopRecording();
     if (inputEngine_) inputEngine_->SetRawCapture(false);
     ReleaseRecordingCursor();
+    while (librarySaveTask_.valid() || libraryDirty_ || !runsToKeep_.empty()) {
+        PollLibrarySave();
+        if (librarySaveTask_.valid()) librarySaveTask_.wait();
+        else break;
+    }
+    if (libraryLock_) { ReleaseMutex(libraryLock_); CloseHandle(libraryLock_); }
 }
 
 bool App::Initialize(HWND hwnd, int width, int height) {
@@ -52,7 +58,18 @@ bool App::Initialize(HWND hwnd, int width, int height) {
     if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localData))) {
         try { autosave_ = std::make_unique<Autosave>(std::filesystem::path(localData) / L"RLA" / L"Autosaves"); }
         catch (const std::exception& error) { autosaveError_ = error.what(); }
-    } else autosaveError_ = "The local application data folder is unavailable.";
+        libraryPath_=std::filesystem::path(localData)/L"RLA"/L"mice.json";
+        HANDLE lock=CreateMutexW(nullptr,TRUE,L"Local\\RLA_MouseLibrary");
+        if (!lock || GetLastError()==ERROR_ALREADY_EXISTS) {
+            if (lock) CloseHandle(lock);
+            libraryReadOnly_=true; libraryMessage_="Another RLA instance owns the mouse library. This instance is read-only.";
+        } else libraryLock_=lock;
+        std::string error;
+        if (!mouseLibrary_.Load(libraryPath_,error)) { libraryReadOnly_=true; libraryMessage_="Mouse library could not be loaded: "+error+". The file will not be overwritten."; }
+    } else {
+        autosaveError_ = "The local application data folder is unavailable.";
+        libraryReadOnly_=true; libraryMessage_=autosaveError_;
+    }
     statusMessage_ = "Ready - Assign mice to begin";
 
     return true;
@@ -60,6 +77,10 @@ bool App::Initialize(HWND hwnd, int width, int height) {
 
 void App::Update() {
     PollLatencyAnalysis();
+    PollLibrarySave();
+    if (autoRankPending_ && state_!=AppState::Recording && !latencyTask_.valid()) {
+        autoRankPending_=false; StartLatencyAnalysis();
+    }
     UpdateRecordingCursor();
     const bool stopClick = inputEngine_->TakeStopClick();
     // Process input events
@@ -164,9 +185,13 @@ void App::RenderMainWindow() {
     RenderControlPanel();
     ImGui::Separator();
 
-    if (showPlotWindow_) {
-        RenderPlotPanel();
-    }
+    if (ImGui::RadioButton("Recording view",!showLibrary_)) showLibrary_=false;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Mice & ranking",showLibrary_)) showLibrary_=true;
+    if (showLibrary_) {
+        ImGui::BeginChild("Mouse library page",ImVec2(0,ImGui::GetContentRegionAvail().y-ImGui::GetFrameHeightWithSpacing()));
+        RenderMouseLibrary(); ImGui::EndChild();
+    } else if (showPlotWindow_) RenderPlotPanel();
 
     RenderStatusBar();
 
@@ -347,6 +372,7 @@ void App::RenderAutosaveControls() {
 void App::ResetLatencyAnalysis() {
     ++sessionRevision_;
     latencyFit_ = {};
+    comparisonMessage_.clear();
     selectedLatencyMatch_ = -1;
     focusLatencyMatch_ = false;
 }
@@ -356,6 +382,7 @@ void App::StartLatencyAnalysis() {
     latencyFit_ = {};
     selectedLatencyMatch_ = -1;
     latencyRevision_ = sessionRevision_;
+    resultMethod_=latencyMode_;
     try {
         latencyTask_ = std::async(std::launch::async, [session = currentSession_, mode = latencyMode_] {
             return Analyzer::FitLatency(session, mode);
@@ -367,7 +394,10 @@ void App::PollLatencyAnalysis() {
     if (!latencyTask_.valid() || latencyTask_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
     try {
         auto fit = latencyTask_.get();
-        if (latencyRevision_ == sessionRevision_) latencyFit_ = std::move(fit);
+        if (latencyRevision_ == sessionRevision_) {
+            latencyFit_ = std::move(fit);
+            if (latencyFit_.valid && mouseLibrary_.autoRank && !currentSession_.mouseA.setupId.empty() && !currentSession_.mouseB.setupId.empty()) SaveComparison();
+        }
     } catch (const std::exception& error) {
         if (latencyRevision_ == sessionRevision_) latencyFit_.message = std::string("Analysis failed: ") + error.what();
     }
@@ -390,6 +420,7 @@ void App::RenderLatencyControls() {
     }
     if (!latencyFit_.message.empty() && !latencyFit_.valid) ImGui::TextWrapped("%s", latencyFit_.message.c_str());
     if (!latencyFit_.valid) return;
+    if (!comparisonMessage_.empty()) ImGui::TextWrapped("%s",comparisonMessage_.c_str());
     ImGui::Text("B-A: %+.3f ms | spread (MAD): %.3f ms | %zu cycles, %zu points | bins: %.3f ms",
         latencyFit_.differenceMs, latencyFit_.spreadMs, latencyFit_.matchedCycles, latencyFit_.matches.size(), latencyFit_.binMs);
     ImGui::SameLine();
@@ -1040,6 +1071,10 @@ void App::RenderStatusBar() {
 
     ImGui::TextColored(stateColor, "[%s]", stateStr);
     ImGui::SameLine();
+    if (librarySaveFailed_) {
+        ImGui::TextColored(ImVec4(1,0.4f,0.3f,1),"Library save failed. Open Mice & ranking to retry.");
+        return;
+    }
     ImGui::Text("%s", statusMessage_.c_str());
     if (state_ != AppState::Recording) {
         const auto message = autosave_ ? autosave_->GetStatus().message : autosaveError_;
@@ -1061,6 +1096,8 @@ void App::StartRecording() {
     }
     deviceManager_->CancelAssignment();
     currentSession_ = RecordingSession{};
+    autoRankPending_=false;
+    CaptureMouseIdentity();
     ResetLatencyAnalysis();
     enableYScaleB_ = false;
     yScaleB_ = 1.0f;
@@ -1107,12 +1144,18 @@ void App::StopRecording() {
         statusMessage_ += " Could not restore mouse controls. Press Esc to retry or Alt+F4 to close.";
     ReleaseRecordingCursor();
     stoppingRecording_ = false;
+    DetectSessionRates();
     if (autosave_) {
         const auto* a = deviceManager_->GetMouseADevice();
         const auto* b = deviceManager_->GetMouseBDevice();
         try { autosave_->Save(currentSession_, a ? a->name : L"Unknown", b ? b->name : L"Unknown"); }
         catch (const std::exception& error) { statusMessage_ += std::string(" Autosave failed: ") + error.what(); }
     }
+    autoRankPending_=mouseLibrary_.autoRank && !libraryReadOnly_ &&
+        !currentSession_.mouseA.setupId.empty() && !currentSession_.mouseB.setupId.empty() &&
+        currentSession_.mouseA.pollingHz>0 && currentSession_.mouseB.pollingHz>0 &&
+        currentSession_.mouseA.setupId!=currentSession_.mouseB.setupId &&
+        !currentSession_.eventsA.empty() && !currentSession_.eventsB.empty();
 }
 
 void App::OnCaptureEscape() {
@@ -1160,6 +1203,8 @@ void App::OnResize(int width, int height) {
 
 std::string App::GetMouseDisplayName(const MouseDevice* device) const {
     if (!device) return "Unknown";
+    const auto saved=mouseLibrary_.BoundSetup(MouseLibrary::DeviceKey(device->path));
+    if (!saved.empty()) return mouseLibrary_.Label(saved);
 
     // Convert wide string to narrow
     std::string name;
@@ -1219,6 +1264,13 @@ void App::LoadSession() {
         if (session) {
             deviceManager_->CancelAssignment();
             currentSession_ = std::move(*session);
+            if (!libraryReadOnly_) {
+                try {
+                    auto imported=mouseLibrary_;
+                    imported.ImportIdentity(currentSession_.mouseA); imported.ImportIdentity(currentSession_.mouseB);
+                    mouseLibrary_=std::move(imported); LibraryChanged();
+                } catch (const std::exception& error) { libraryMessage_=error.what(); }
+            }
             RebuildPlotData();
             analysisResult_ = AnalysisResult{}; // Clear analysis
             TransitionTo(AppState::Ready);
@@ -1233,6 +1285,7 @@ void App::LoadSession() {
 }
 
 void App::RebuildPlotData() {
+    autoRankPending_=false;
     ResetLatencyAnalysis();
     enableYScaleB_ = false;
     yScaleB_ = 1.0f;

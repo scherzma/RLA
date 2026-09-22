@@ -13,6 +13,7 @@
 #include "src/App.h"
 #include "resource.h"
 #include "src/WindowMessages.h"
+#include "src/ResponsivenessMonitor.h"
 
 // Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -133,25 +134,32 @@ int WINAPI WinMain(
 
     // Main message loop
     MSG msg{};
-    while (msg.message != WM_QUIT) {
-        if (!RLA::PumpWindowMessages(msg,
-            [](MSG& message, UINT first, UINT last) {
-                return PeekMessageW(&message, nullptr, first, last, PM_REMOVE) != FALSE;
-            },
-            [](MSG& message) {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            })) {
-            break;
-        }
+    {
+        RLA::ResponsivenessMonitor monitor(hwnd);
+        while (msg.message != WM_QUIT) {
+            monitor.Checkpoint("message dispatch");
+            if (!RLA::PumpWindowMessages(msg,
+                [](MSG& message, UINT first, UINT last) {
+                    return PeekMessageW(&message, nullptr, first, last, PM_REMOVE) != FALSE;
+                },
+                [](MSG& message) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                })) {
+                break;
+            }
 
-        // Update and render
-        g_app->Update();
-        g_app->Render();
+            // Update and render
+            monitor.Checkpoint("input and background results");
+            g_app->Update();
+            monitor.Checkpoint("UI rendering / presentation");
+            g_app->Render();
+            monitor.Checkpoint("frame complete");
 
-        // Check if app wants to quit
-        if (g_app->ShouldQuit()) {
-            PostQuitMessage(0);
+            // Check if app wants to quit
+            if (g_app->ShouldQuit()) {
+                PostQuitMessage(0);
+            }
         }
     }
 

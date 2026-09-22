@@ -7,6 +7,7 @@
 #include "Renderer.h"
 #include "DataStore.h"
 #include "Autosave.h"
+#include "MouseLibrary.h"
 
 #include <memory>
 #include <string>
@@ -55,6 +56,15 @@ private:
     void PollLatencyAnalysis();
     void ResetLatencyAnalysis();
     void RenderAutosaveControls();
+    void RenderMouseLibrary();
+    bool SetupCombo(const char* label, std::string& selection);
+    void RenderDeviceBinding(const char* label, const MouseDevice* device);
+    void LibraryChanged();
+    void PollLibrarySave();
+    void SaveComparison();
+    void CaptureMouseIdentity();
+    void DetectSessionRates();
+    void OpenRankedRun(const std::string& key);
     void RenderTimingPanel();
     void RenderStatusBar();
 
@@ -83,6 +93,22 @@ private:
     std::unique_ptr<DataStore> dataStore_;
     std::unique_ptr<Autosave> autosave_;
     std::string autosaveError_;
+    MouseLibrary mouseLibrary_;
+    std::filesystem::path libraryPath_;
+    bool libraryReadOnly_ = false, libraryDirty_ = false, rankingDirty_ = true;
+    bool librarySaveFailed_ = false;
+    size_t savingRuns_ = 0;
+    bool autoRankPending_ = false;
+    std::future<std::string> librarySaveTask_;
+    std::deque<RecordingSession> runsToKeep_;
+    std::string libraryMessage_, comparisonMessage_;
+    std::vector<MouseRank> ranking_;
+    int rankMethod_ = 2, resultMethod_ = 2;
+    std::string editMouse_, editSetup_, setupParent_;
+    char mouseName_[161]{}, setupLabel_[161]{};
+    int connectionIndex_ = 1, setupRate_ = 0;
+    bool showLibrary_ = false;
+    HANDLE libraryLock_ = nullptr;
 
     // State
     AppState state_ = AppState::Idle;

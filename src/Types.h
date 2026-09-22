@@ -68,6 +68,11 @@ struct CaptureDiagnostics {
     bool legacySuppressed = false; // Mode at the end of the recording.
 };
 
+struct RecordingMouse {
+    std::string mouseId, setupId, name, connection, label, devicePath;
+    int pollingHz = 0; // Estimated after recording or assigned by the user; zero means unspecified.
+};
+
 struct RecordingSession {
     int64_t startTimestamp = 0;
     int64_t endTimestamp = 0;
@@ -75,6 +80,7 @@ struct RecordingSession {
     std::vector<MouseEvent> eventsB;
     double qpcFrequency = 0.0;
     CaptureDiagnostics capture; // Capture totals since application start, if recorded.
+    RecordingMouse mouseA, mouseB; // Identity at capture time, independent of current assignments.
 };
 
 } // namespace RLA

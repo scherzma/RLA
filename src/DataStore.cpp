@@ -104,14 +104,20 @@ bool DataStore::SaveToJson(const std::filesystem::path& path,
         j["timestamp"] = GetIsoTimestamp();
 
         j["mouseA"] = {
-            {"name", WideToUtf8(mouseAName)},
+            {"name", session.mouseA.name.empty() ? WideToUtf8(mouseAName) : session.mouseA.name},
             {"eventCount", session.eventsA.size()}
         };
 
         j["mouseB"] = {
-            {"name", WideToUtf8(mouseBName)},
+            {"name", session.mouseB.name.empty() ? WideToUtf8(mouseBName) : session.mouseB.name},
             {"eventCount", session.eventsB.size()}
         };
+        auto identity = [](const RecordingMouse& mouse) {
+            return json{{"mouseId",mouse.mouseId},{"setupId",mouse.setupId},{"name",mouse.name},
+                {"connection",mouse.connection},{"pollingHz",mouse.pollingHz},{"label",mouse.label},{"devicePath",mouse.devicePath}};
+        };
+        j["mouseA"]["profile"] = identity(session.mouseA);
+        j["mouseB"]["profile"] = identity(session.mouseB);
 
         j["analysis"] = {
             {"valid", result.valid},
@@ -194,6 +200,19 @@ std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::p
         session.startTimestamp = ReadInteger<int64_t>(metadata.at("startTimestamp"));
         session.endTimestamp = ReadInteger<int64_t>(metadata.at("endTimestamp"));
         session.qpcFrequency = metadata.at("qpcFrequency").get<double>();
+        auto readIdentity = [](const json& source) {
+            RecordingMouse mouse;
+            if (!source.contains("profile")) return mouse;
+            const auto& p=source.at("profile");
+            mouse={p.at("mouseId"),p.at("setupId"),p.at("name"),p.at("connection"),p.at("label"),p.at("devicePath"),ReadInteger<int>(p.at("pollingHz"))};
+            if (mouse.pollingHz<0 || mouse.pollingHz>32000 || mouse.mouseId.size()>128 || mouse.setupId.size()>128 ||
+                mouse.name.size()>160 || mouse.label.size()>160 || mouse.devicePath.size()>32768 ||
+                (!mouse.setupId.empty() && (mouse.mouseId.empty() || mouse.name.empty() ||
+                    (mouse.connection!="Wired" && mouse.connection!="Wireless" && mouse.connection!="Bluetooth" && mouse.connection!="Other"))))
+                throw std::runtime_error("Invalid saved mouse profile");
+            return mouse;
+        };
+        session.mouseA=readIdentity(j.at("mouseA")); session.mouseB=readIdentity(j.at("mouseB"));
         if (j.contains("capture")) {
             const auto& c = j.at("capture");
             if (c.at("method") != "buffered" || c.at("scope") != "application" ||

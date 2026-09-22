@@ -57,7 +57,17 @@ bool InputEngine::Initialize() {
 }
 
 LRESULT CALLBACK InputEngine::InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    }
+    auto* engine = reinterpret_cast<InputEngine*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
+        case WM_INPUT:
+            // GetMessage removed this one report. Read it before draining the
+            // remaining queue, then let Windows clean up its message handle.
+            if (engine) { engine->ReadRawInput(reinterpret_cast<HRAWINPUT>(lParam)); engine->DrainRawInput(); }
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -97,7 +107,7 @@ void InputEngine::InputThreadFunc() {
         HWND_MESSAGE,  // Message-only window
         nullptr,
         GetModuleHandle(nullptr),
-        nullptr
+        this
     );
 
     if (!inputHwnd_) {
@@ -118,39 +128,18 @@ void InputEngine::InputThreadFunc() {
     // Signal that we're ready
     threadReady_ = true;
 
-    // Leave WM_INPUT in the queue for GetRawInputBuffer. GetMessage or an
-    // unfiltered PeekMessage would remove packets before the buffered read.
-    // RIDEV_DEVNOTIFY is deliberately not used: its messages share this queue.
+    // Message-driven wake-ups have no timer delay and no stale queue flag loop.
+    // WM_INPUT reads the removed report with GetRawInputData, then uses
+    // GetRawInputBuffer for reports that arrived while it was being processed.
     MSG msg{};
-    unsigned emptyWakeups = 0;
     while (!shouldStop_.load()) {
-        size_t recordsRead = 0;
-        const bool readOk = DrainRawInput(&recordsRead);
-        unsigned messages = 0;
-        while (messages < 64 && (PeekMessage(&msg, nullptr, 0, WM_INPUT - 1, PM_REMOVE) ||
-               PeekMessage(&msg, nullptr, WM_INPUT + 1, UINT_MAX, PM_REMOVE))) {
-            ++messages;
-            if (msg.message == WM_QUIT) {
-                shouldStop_ = true;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        if (shouldStop_) break;
-        // Retry errors without spinning a time-critical thread on a stuck queue.
-        emptyWakeups = recordsRead == 0 && messages == 0 ? emptyWakeups + 1 : 0;
-        if (!readOk || emptyWakeups >= 2) {
-            Sleep(1);
-            emptyWakeups = 0;
-        }
-        const DWORD wait = MsgWaitForMultipleObjectsEx(0, nullptr, INFINITE,
-            QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        if (wait == WAIT_FAILED) {
-            lastError_ = GetLastError();
-            ++readErrors_;
+        const BOOL received = GetMessageW(&msg, nullptr, 0, 0);
+        if (received <= 0) {
+            if (received == -1) { lastError_ = GetLastError(); ++readErrors_; }
             break;
         }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 
     // Cleanup
@@ -208,6 +197,18 @@ bool InputEngine::Start() {
 
 void InputEngine::Stop() {
     running_ = false;
+}
+
+bool InputEngine::ReadRawInput(HRAWINPUT input) {
+    RAWINPUT raw{};
+    UINT size = sizeof(raw);
+    const UINT read = rawDataReader_(input, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER));
+    if (read == UINT_MAX) { lastError_ = GetLastError(); ++readErrors_; return false; }
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    if (read > sizeof(raw) || !ProcessRawBatch(reinterpret_cast<const BYTE*>(&raw), read, 1, now.QuadPart)) {
+        lastError_ = ERROR_INVALID_DATA; ++readErrors_; return false;
+    }
+    return true;
 }
 
 bool InputEngine::DrainRawInput(size_t* recordsRead) {

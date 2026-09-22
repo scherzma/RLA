@@ -70,6 +70,7 @@ std::wstring DeviceManager::GetDevicePath(HANDLE hDevice) {
         return L"";
     }
 
+    path.resize(path.find(L'\0') == std::wstring::npos ? path.size() : path.find(L'\0'));
     return path;
 }
 

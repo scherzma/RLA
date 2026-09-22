@@ -25,6 +25,8 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\Latency.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\MouseLibrary.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\MouseLibraryUI.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\Autosave.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\DataStore.cpp">
       <Filter>Source Files</Filter>
@@ -47,6 +49,8 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Autosave.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\MouseLibrary.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\ResponsivenessMonitor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\DataStore.h">
       <Filter>Header Files</Filter>
     </ClInclude>

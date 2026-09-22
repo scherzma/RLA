@@ -59,6 +59,7 @@ private:
 
     // Returns false on an API/packet error. Called only on the input thread.
     bool DrainRawInput(size_t* recordsRead = nullptr);
+    bool ReadRawInput(HRAWINPUT input);
     bool ProcessRawBatch(const BYTE* bytes, size_t size, UINT count, int64_t timestamp);
 
     // Register/unregister raw input for the hidden window
@@ -80,6 +81,7 @@ private:
     // Reused, 8-byte aligned storage. No allocation in the normal input path.
     std::vector<uint64_t> rawBuffer_ = std::vector<uint64_t>(8192);
     decltype(&GetRawInputBuffer) rawBufferReader_ = &GetRawInputBuffer;
+    decltype(&GetRawInputData) rawDataReader_ = &GetRawInputData;
     decltype(&RegisterRawInputDevices) rawDeviceRegistrar_ = &RegisterRawInputDevices;
     std::atomic<bool> rawCapture_{false}, stopClick_{false};
     std::atomic<uint64_t> packets_{0}, groupedPackets_{0}, maxBatch_{0};
