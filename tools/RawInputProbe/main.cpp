@@ -1,6 +1,7 @@
 // Independent diagnostic. No RLA capture, analysis, or rendering code is linked.
 #define NOMINMAX
 #include <windows.h>
+#include <shellapi.h>
 extern "C" {
 #include <hidsdi.h>
 }
@@ -263,8 +264,17 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l) {
     return DefWindowProcW(h,msg,w,l);
 }
 }
-int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR args,int show) {
-    if(std::wstring(args)==L"--hid-info") {
+int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int show) {
+    int argc=0;
+    auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);
+    if(!argv) return 1;
+    std::vector<std::wstring> arguments;
+    for(int i=1;i<argc;++i) arguments.emplace_back(argv[i]);
+    LocalFree(argv);
+    auto has=[&](const wchar_t* flag) { return std::find(arguments.begin(),arguments.end(),flag)!=arguments.end(); };
+    reportData=has(L"--report-data");
+    if(has(L"--verify-report-data")) return reportData?0:2;
+    if(has(L"--hid-info")) {
         UINT count=0;
         if(GetRawInputDeviceList(nullptr,&count,sizeof(RAWINPUTDEVICELIST))==UINT(-1)) return 1;
         std::vector<RAWINPUTDEVICELIST> list(count);
@@ -280,7 +290,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR args,int show) {
         std::ofstream file(path/L"hid-info.json"); file<<info.dump(2);
         return file.good()?0:1;
     }
-    if (std::wstring(args)==L"--self-test") {
+    if (has(L"--self-test")) {
         Counts c; c.add(-1,true,true); c.add(18000,true,true);
         for(int i=4000;i<7500;++i) { c.add(i,true,true); c.add(i,false,false); }
         c.add(7500,true,false);
@@ -291,12 +301,21 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR args,int show) {
             sampleCount==2 && sampleOverflow==1 && samples[0].dx==-123 &&
             samples[0].dy==456 && samples[0].flags==8 && samples[1].device==1 ? 0:1;
     }
-    reportData=std::wstring(args)==L"--report-data";
+    if(reportData) {
+        wchar_t local[32768];
+        DWORD length=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
+        if(!length || length>=32768) return 1;
+        auto dir=std::filesystem::path(local)/L"RLA"/L"RawInputProbe";
+        std::filesystem::create_directories(dir);
+        std::ofstream ready(dir/(L"ready-"+std::to_wstring(GetCurrentProcessId())+L".json"));
+        ready<<nlohmann::json({{"version",2},{"reportData",true},{"pid",GetCurrentProcessId()}}).dump();
+        if(!ready.good()) return 1;
+    }
     LARGE_INTEGER f; QueryPerformanceFrequency(&f); frequency=f.QuadPart;
     WNDCLASSW cls{}; cls.lpfnWndProc=proc; cls.hInstance=instance;
     cls.lpszClassName=L"IndependentRawInputProbe"; cls.hCursor=LoadCursor(nullptr,IDC_ARROW);
     cls.hbrBackground=GetSysColorBrush(COLOR_WINDOW); RegisterClassW(&cls);
-    window=CreateWindowW(cls.lpszClassName,L"Independent mouse input test",WS_OVERLAPPEDWINDOW,
+    window=CreateWindowW(cls.lpszClassName,reportData?L"USB report comparison":L"Independent mouse input test",WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,CW_USEDEFAULT,920,510,nullptr,nullptr,instance,nullptr);
     if(!window) return 1;
     for(int i=0;i<3;++i) buttons[i]=CreateWindowW(L"BUTTON",i==0?L"Assign A":i==1?L"Assign B":L"Start 18-second test",

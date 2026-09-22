@@ -11,7 +11,7 @@ if (-not $isAdmin) {
 
 $repoPath = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $probePath = Join-Path $repoPath 'x64/RawInputProbe/RawInputProbe.exe'
-if ($ReportData) { $probePath = Join-Path $repoPath 'x64/RawInputReportProbe/RawInputProbe.exe' }
+if ($ReportData) { $probePath = Join-Path $repoPath 'x64/RawInputReportProbe2/RawInputProbe.exe' }
 $resultsPath = Join-Path $env:LOCALAPPDATA 'RLA/RawInputProbe'
 $tracePath = Join-Path $resultsPath ('USB-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $PID)
 New-Item -ItemType Directory -Force -Path $tracePath | Out-Null
@@ -41,6 +41,15 @@ try {
     # This is the interactive test window, not a background service.
     if ($ReportData) { $probe = Start-Process -FilePath $probePath -ArgumentList '--report-data' -PassThru }
     else { $probe = Start-Process -FilePath $probePath -PassThru }
+    if ($ReportData) {
+        $readyPath = Join-Path $resultsPath "ready-$($probe.Id).json"
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $readyPath) -and [DateTime]::UtcNow -lt $deadline -and -not $probe.HasExited) { Start-Sleep -Milliseconds 100 }
+        if (-not (Test-Path -LiteralPath $readyPath)) { throw 'The probe did not confirm report mode. Do not record.' }
+        $ready = Get-Content -LiteralPath $readyPath -Raw | ConvertFrom-Json
+        if (-not $ready.reportData -or $ready.version -ne 2) { throw 'Incorrect probe mode. Do not record.' }
+        Copy-Item -LiteralPath $readyPath -Destination $tracePath
+    }
     $result = $null
     while (([DateTime]::UtcNow - $startedUtc).TotalSeconds -lt 120) {
         $result = Get-ChildItem -LiteralPath $resultsPath -Filter "probe-*-$($probe.Id).json" |
@@ -51,6 +60,10 @@ try {
     Invoke-Logman @('stop','-n',$sessionName)
     $running = $false
     if ($result) { Copy-Item -LiteralPath $result.FullName -Destination $tracePath }
+    if ($ReportData -and $result) {
+        $recorded = Get-Content -LiteralPath $result.FullName -Raw | ConvertFrom-Json
+        if ($recorded.version -ne 2 -or -not $recorded.clockAnchor -or -not $recorded.samples) { throw 'Report capture is incomplete: X/Y samples or clock anchor are missing.' }
+    }
     [ordered]@{
         traceStartedUtc=$startedUtc.ToString('o'); traceStoppedUtc=[DateTime]::UtcNow.ToString('o')
         probePid=$probe.Id; resultFile=if($result){$result.Name}else{$null}

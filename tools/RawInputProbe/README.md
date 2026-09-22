@@ -32,10 +32,12 @@ See [Microsoft's USB capture instructions and keyword definitions](https://learn
 
 ## Compare movement bytes
 
-Build with `./tools/RawInputProbe/build.ps1 -OutputFolder RawInputReportProbe`, then open `CompareReports.cmd`. This opens the separate report recorder. Use the same A-only, both, A-only sequence. Leave the mouse connections and DPI settings unchanged.
+Build with `./tools/RawInputProbe/build.ps1 -OutputFolder RawInputReportProbe2`, then open `CompareReports.cmd`. This opens the separate report recorder, titled **USB report comparison**. The helper requires a version-2 startup handshake and rejects results without individual samples or a clock anchor. Use the same A-only, both, A-only sequence. Leave the mouse connections and DPI settings unchanged.
 
 This mode enables `PartialDataBusTrace`, which records USB payload bytes, including possible traffic from other USB devices. Do not type while the test window is open. The files stay local. The original `TraceUsb.cmd` continues to capture headers only.
 
 The probe stores up to 600,000 individual reports in preallocated memory, including zero movement, with QPC timestamps, device index, signed X/Y counts and flags. It saves a UTC/QPC clock anchor for alignment, HID value capabilities for each assigned mouse, and an explicit overflow count. Files are written after recording stops. HID capability reads use a zero-access device handle and do not change device settings. `--hid-info` writes a read-only capability inventory to the results directory for troubleshooting.
 
 Analysis must decode the correct HID report format, exclude other endpoints and zero-movement USB reports, check trace loss and sample overflow, and compare signed movement over short windows as well as matched report sequences. Similar total counts alone do not prove report combining. An absent `MOUSE_MOVE_NOCOALESCE` flag does not prove that a particular event was combined.
+
+The 2026-09-22 partial-data trace contained only transfer headers for the mouse completions. Enabling the payload keyword does not guarantee that usable USB report bytes are present. Check the ETL contents before attempting a byte comparison or requesting another recording.
