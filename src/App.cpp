@@ -79,7 +79,7 @@ void App::Update() {
     PollLatencyAnalysis();
     PollLibrarySave();
     if (autoRankPending_ && state_!=AppState::Recording && !latencyTask_.valid()) {
-        autoRankPending_=false; StartLatencyAnalysis();
+        autoRankPending_=false; ApplyAutoScaleB(); StartLatencyAnalysis();
     }
     UpdateRecordingCursor();
     const bool stopClick = inputEngine_->TakeStopClick();
@@ -179,19 +179,27 @@ void App::RenderMainWindow() {
         ImGui::EndMenuBar();
     }
 
-    // Main layout
-    ImGui::SetNextItemOpen(!deviceManager_->IsMouseAAssigned() && !deviceManager_->IsMouseBAssigned(), ImGuiCond_Once);
-    if (ImGui::CollapsingHeader("Device assignment")) RenderDevicePanel();
-    RenderControlPanel();
-    ImGui::Separator();
-
-    if (ImGui::RadioButton("Recording view",!showLibrary_)) showLibrary_=false;
+    if (ImGui::RadioButton("1. Setup",showLibrary_ && libraryPage_==0)) { showLibrary_=true; libraryPage_=0; }
     ImGui::SameLine();
-    if (ImGui::RadioButton("Mice & ranking",showLibrary_)) showLibrary_=true;
+    if (ImGui::RadioButton("2. Record & analyze",!showLibrary_)) showLibrary_=false;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("3. Rankings",showLibrary_ && libraryPage_==1)) { showLibrary_=true; libraryPage_=1; }
+    ImGui::Separator();
+    if (!showLibrary_ || state_==AppState::Recording) RenderControlPanel();
     if (showLibrary_) {
         ImGui::BeginChild("Mouse library page",ImVec2(0,ImGui::GetContentRegionAvail().y-ImGui::GetFrameHeightWithSpacing()));
+        if (libraryPage_==0) {
+            ImGui::SeparatorText("Assign the two mice");
+            ImGui::TextWrapped("Choose Assign, then move only that mouse. A is the reference; B is the mouse to compare.");
+            RenderDevicePanel();
+        }
         RenderMouseLibrary(); ImGui::EndChild();
-    } else if (showPlotWindow_) RenderPlotPanel();
+    } else {
+        if (!deviceManager_->IsMouseAAssigned() && currentSession_.eventsA.empty()) {
+            ImGui::TextWrapped("Start in Setup to assign your mice. You can also load a saved recording from File.");
+        }
+        if (showPlotWindow_) RenderPlotPanel();
+    }
 
     RenderStatusBar();
 
@@ -291,9 +299,7 @@ void App::RenderControlPanel() {
         if (ImGui::Button("Start Recording")) {
             StartRecording();
         }
-        ImGui::SameLine();
-        ImGui::Checkbox("Raw capture", &rawCaptureMode_);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disables ordinary mouse messages during recording to reduce input processing.\nClick or press Esc to stop. Normal controls return on stop or focus loss.");
+
     }
     else {
         if (ImGui::Button("Stop Recording")) {
@@ -323,15 +329,20 @@ void App::RenderControlPanel() {
         ImGui::EndDisabled();
     }
 
-    // Buffer utilization
-    ImGui::SameLine();
-    float utilization = inputEngine_->GetBufferUtilization() * 100.0f;
-    ImGui::Text("Buffer: %.1f%%", utilization);
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Keep cursor in window", &keepCursorInWindow_)) UpdateRecordingCursor();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keeps the pointer over RLA while recording. Releases it on stop or focus loss.\nThis controls which window receives ordinary cursor input; raw movement counts are unchanged.");
     ImGui::SameLine();
     RenderAutosaveControls();
+    ImGui::SameLine();
+    if (ImGui::Button("Capture options")) ImGui::OpenPopup("Capture options");
+    if (ImGui::BeginPopup("Capture options")) {
+        ImGui::BeginDisabled(isRecording);
+        ImGui::Checkbox("Raw capture (recommended)", &rawCaptureMode_);
+        ImGui::EndDisabled();
+        if (ImGui::Checkbox("Keep cursor in window", &keepCursorInWindow_)) UpdateRecordingCursor();
+        ImGui::Text("Buffer: %.1f%%", inputEngine_->GetBufferUtilization()*100.0f);
+        ImGui::TextUnformatted("Raw capture: click or press Esc to stop.");
+        ImGui::EndPopup();
+    }
+
 }
 
 void App::RenderAutosaveControls() {
@@ -396,6 +407,12 @@ void App::PollLatencyAnalysis() {
         auto fit = latencyTask_.get();
         if (latencyRevision_ == sessionRevision_) {
             latencyFit_ = std::move(fit);
+            if (latencyFit_.valid && !latencyFit_.matches.empty()) {
+                const auto closest=std::min_element(latencyFit_.matches.begin(),latencyFit_.matches.end(),[&](const auto& a,const auto& b) {
+                    return std::abs(a.differenceMs-latencyFit_.differenceMs)<std::abs(b.differenceMs-latencyFit_.differenceMs);
+                });
+                selectedLatencyMatch_=static_cast<int>(closest-latencyFit_.matches.begin());
+            }
             if (latencyFit_.valid && mouseLibrary_.autoRank && !currentSession_.mouseA.setupId.empty() && !currentSession_.mouseB.setupId.empty()) SaveComparison();
         }
     } catch (const std::exception& error) {
@@ -404,27 +421,44 @@ void App::PollLatencyAnalysis() {
 }
 
 void App::RenderLatencyControls() {
-    ImGui::BeginDisabled(state_ == AppState::Recording || latencyTask_.valid());
-    ImGui::SetNextItemWidth(125);
-    if (ImGui::Combo("##Latency features", &latencyMode_, "Minima\0Half-height\0Both\0")) ResetLatencyAnalysis();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(currentSession_.eventsA.empty() || currentSession_.eventsB.empty());
-    if (ImGui::Button("Auto latency")) StartLatencyAnalysis();
-    ImGui::EndDisabled();
+    ImGui::BeginDisabled(state_ == AppState::Recording || latencyTask_.valid() || currentSession_.eventsA.empty() || currentSession_.eventsB.empty());
+    if (ImGui::Button("Analyze latency")) { ApplyAutoScaleB(); StartLatencyAnalysis(); }
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (latencyTask_.valid()) ImGui::TextUnformatted("Analyzing...");
-    else {
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compare matching minima and/or 50%% height crossings on rising and falling slopes.\nNeeds at least three clean shared cycles. Fits within +/-10 ms. Uses its own common time bins.\nPositive B-A means B appears later. Motion and application timing affect this estimate.");
+    else if (currentSession_.eventsA.empty() || currentSession_.eventsB.empty()) ImGui::TextDisabled("Record both mice to compare latency.");
+    else ImGui::TextDisabled("Compare matching movement; align curve heights automatically.");
+    ImGui::SameLine();
+    if (ImGui::Button("Method...")) ImGui::OpenPopup("Latency method");
+    if (ImGui::BeginPopup("Latency method")) {
+        ImGui::BeginDisabled(state_ == AppState::Recording || latencyTask_.valid());
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::Combo("Features", &latencyMode_, "Minima\0Half-height\0Both (recommended)\0")) ResetLatencyAnalysis();
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Uses matching minima and/or half-height crossings. Needs at least three shared cycles. Positive B-A means B arrives later. Display smoothing does not change the result.");
+        ImGui::EndPopup();
     }
     if (!latencyFit_.message.empty() && !latencyFit_.valid) ImGui::TextWrapped("%s", latencyFit_.message.c_str());
     if (!latencyFit_.valid) return;
     if (!comparisonMessage_.empty()) ImGui::TextWrapped("%s",comparisonMessage_.c_str());
-    ImGui::Text("B-A: %+.3f ms | spread (MAD): %.3f ms | %zu cycles, %zu points | bins: %.3f ms",
-        latencyFit_.differenceMs, latencyFit_.spreadMs, latencyFit_.matchedCycles, latencyFit_.matches.size(), latencyFit_.binMs);
+    ImGui::TextColored(ImVec4(1.0f,0.85f,0.4f,1),"B is %.3f ms %s than A",std::abs(latencyFit_.differenceMs),latencyFit_.differenceMs>=0 ? "later" : "earlier");
     ImGui::SameLine();
-    ImGui::Checkbox("Fit markers", &showLatencyMarkers_);
+    ImGui::Text("| Spread: %.3f ms | %zu matched cycles",latencyFit_.spreadMs,latencyFit_.matchedCycles);
+    ImGui::SameLine();
+    if (ImGui::Button("Review / save result")) { showLibrary_=true; libraryPage_=1; }
+    ImGui::Checkbox("Show latency markers", &showLatencyMarkers_);
+    ImGui::SameLine();
+    ImGui::Checkbox("All matches", &showAllLatencyMarkers_);
+    if (!latencyFit_.matches.empty()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Previous")) { selectedLatencyMatch_=(selectedLatencyMatch_<=0 ? static_cast<int>(latencyFit_.matches.size()) : selectedLatencyMatch_)-1; focusLatencyMatch_=true; showLatencyMarkers_=true; }
+        ImGui::SameLine();
+        if (ImGui::Button("Next")) { selectedLatencyMatch_=(selectedLatencyMatch_+1)%static_cast<int>(latencyFit_.matches.size()); focusLatencyMatch_=true; showLatencyMarkers_=true; }
+        ImGui::SameLine();
+        if (ImGui::Button("Zoom to match")) { if (selectedLatencyMatch_<0) selectedLatencyMatch_=0; focusLatencyMatch_=true; showLatencyMarkers_=true; }
+        ImGui::SameLine();
+        ImGui::Text("Match %d / %zu",selectedLatencyMatch_+1,latencyFit_.matches.size());
+    }
     if (ImGui::TreeNode("Latency details")) {
         ImGui::TextWrapped("%s", latencyFit_.message.c_str());
         ImGui::TextUnformatted("Spread describes variation between points, not measurement accuracy. Select a row to view it.");
@@ -647,8 +681,8 @@ void App::RenderPlotPanel() {
         RenderTimingPanel();
         return;
     }
-    RenderScaleControls();
     if (plotMode_ == 0) RenderLatencyControls();
+    else RenderScaleControls();
 
     // Measure after controls so the graph uses the remaining height.
     auto plotSize = []() {
@@ -665,7 +699,11 @@ void App::RenderPlotPanel() {
         ImGui::SameLine();
         if (ImGui::Button("Raw reports")) { enableTimeBinning_=false; enableSmoothing_=false; enableGapInterpolation_=false; }
         ImGui::SameLine();
-        ImGui::TextDisabled("Display only; saved events and latency analysis are unchanged.");
+        if (ImGui::Button("Fit whole recording")) { fitMovementView_=true; focusLatencyMatch_=false; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Display only; recorded data stays unchanged.");
+        if (ImGui::CollapsingHeader("Advanced display settings")) {
+        RenderScaleControls();
         // Velocity mode controls
         ImGui::Checkbox("Smoothing", &enableSmoothing_);
         if (enableSmoothing_) {
@@ -718,8 +756,12 @@ void App::RenderPlotPanel() {
             ImGui::SliderFloat("##MarkerSize", &markerSize_, 1.0f, 8.0f, "%.0f px");
         }
 
+        } // Advanced display settings
+
         // Velocity plot
+        if (fitMovementView_) ImPlot::SetNextAxesToFit();
         if (ImPlot::BeginPlot("Movement magnitude vs Time", plotSize())) {
+            fitMovementView_=false;
             ImPlot::SetupAxes("Time (ms)", enableTimeBinning_ ? "Counts / bin" : "Counts / event");
 
             double maxTime = 100.0;
@@ -736,6 +778,14 @@ void App::RenderPlotPanel() {
             if (focusLatencyMatch_ && selectedLatencyMatch_ >= 0 && selectedLatencyMatch_ < static_cast<int>(latencyFit_.matches.size())) {
                 const auto& match = latencyFit_.matches[selectedLatencyMatch_];
                 ImPlot::SetupAxisLimits(ImAxis_X1, (std::min)(match.timeA, match.timeB) - 15, (std::max)(match.timeA, match.timeB) + 15, ImPlotCond_Always);
+                double peak=0;
+                for (bool mouseB : {false,true}) {
+                    const auto& curve=PrepareMovementPlot(mouseB);
+                    auto first=std::lower_bound(curve.times.begin(),curve.times.end(),(std::min)(match.timeA,match.timeB)-15);
+                    for (size_t i=static_cast<size_t>(first-curve.times.begin()); i<curve.times.size() && curve.times[i]<(std::max)(match.timeA,match.timeB)+15; ++i)
+                        peak=(std::max)(peak,curve.values[i]);
+                }
+                if (peak>0) ImPlot::SetupAxisLimits(ImAxis_Y1,-0.08*peak,peak*1.45,ImPlotCond_Always);
                 focusLatencyMatch_ = false;
             }
 
@@ -750,12 +800,31 @@ void App::RenderPlotPanel() {
             }
 
             if (showLatencyMarkers_ && latencyFit_.valid) {
-                std::vector<double> marksA, marksB;
-                for (const auto& match : latencyFit_.matches) { marksA.push_back(match.timeA); marksB.push_back(match.timeB); }
-                ImPlot::SetNextLineStyle(ImVec4(0.4f, 0.75f, 1.0f, 0.5f));
-                ImPlot::PlotInfLines("A fit points", marksA.data(), static_cast<int>(marksA.size()), ImPlotInfLinesFlags_None);
-                ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.65f, 0.3f, 0.5f));
-                ImPlot::PlotInfLines("B fit points", marksB.data(), static_cast<int>(marksB.size()), ImPlotInfLinesFlags_None);
+                if (showAllLatencyMarkers_) {
+                    std::vector<double> marksA,marksB;
+                    for (const auto& match : latencyFit_.matches) { marksA.push_back(match.timeA); marksB.push_back(match.timeB); }
+                    ImPlot::SetNextLineStyle(ImVec4(0.3f,0.7f,1,0.65f),1.5f);
+                    ImPlot::PlotInfLines("A matches",marksA.data(),static_cast<int>(marksA.size()));
+                    ImPlot::SetNextLineStyle(ImVec4(1,0.55f,0.25f,0.65f),1.5f);
+                    ImPlot::PlotInfLines("B matches",marksB.data(),static_cast<int>(marksB.size()));
+                }
+                if (selectedLatencyMatch_>=0 && selectedLatencyMatch_<static_cast<int>(latencyFit_.matches.size())) {
+                    const auto& match=latencyFit_.matches[selectedLatencyMatch_];
+                    const ImVec4 aColor(0.35f,0.8f,1,1),bColor(1,0.65f,0.25f,1);
+                    ImPlot::SetNextLineStyle(aColor,3.0f);
+                    ImPlot::PlotInfLines("A selected",&match.timeA,1);
+                    ImPlot::SetNextLineStyle(bColor,3.0f);
+                    ImPlot::PlotInfLines("B selected",&match.timeB,1);
+                    const auto limits=ImPlot::GetPlotLimits();
+                    const double y=limits.Y.Max-0.18*limits.Y.Size();
+                    if (match.timeA>=limits.X.Min && match.timeA<=limits.X.Max && match.timeB>=limits.X.Min && match.timeB<=limits.X.Max) {
+                        ImPlot::Annotation(match.timeA,y,aColor,ImVec2(-65,-30),true,"A %.3f ms",match.timeA);
+                        ImPlot::Annotation(match.timeB,y,bColor,ImVec2(65,-30),true,"B %.3f ms",match.timeB);
+                        ImPlot::Annotation((match.timeA+match.timeB)*0.5,y,ImVec4(1,0.9f,0.45f,1),ImVec2(0,20),true,"B-A %+.3f ms",match.differenceMs);
+                        auto* draw=ImPlot::GetPlotDrawList();
+                        draw->AddLine(ImPlot::PlotToPixels(match.timeA,y),ImPlot::PlotToPixels(match.timeB,y),IM_COL32(255,230,115,255),3.0f);
+                    }
+                }
             }
             ImPlot::EndPlot();
         }
@@ -995,7 +1064,7 @@ void App::RenderStatusBar() {
     ImGui::TextColored(stateColor, "[%s]", stateStr);
     ImGui::SameLine();
     if (librarySaveFailed_) {
-        ImGui::TextColored(ImVec4(1,0.4f,0.3f,1),"Library save failed. Open Mice & ranking to retry.");
+        ImGui::TextColored(ImVec4(1,0.4f,0.3f,1),"Library save failed. Open Setup or Rankings to retry.");
         return;
     }
     ImGui::Text("%s", statusMessage_.c_str());
@@ -1200,6 +1269,8 @@ void App::LoadSession() {
             statusMessage_ = std::format("Session loaded. A={} events, B={} events",
                                         currentSession_.eventsA.size(),
                                         currentSession_.eventsB.size());
+            showLibrary_=false;
+            fitMovementView_=true;
         }
         else {
             statusMessage_ = "Load failed: " + dataStore_->GetLastError();

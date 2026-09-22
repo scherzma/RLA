@@ -107,7 +107,10 @@ private:
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
     int connectionIndex_ = 1, setupRate_ = 0;
-    bool showLibrary_ = false;
+    bool showLibrary_ = true;
+    int libraryPage_ = 0; // 0: device setup, 1: rankings
+    bool showAllLatencyMarkers_ = false;
+    bool fitMovementView_ = false;
     HANDLE libraryLock_ = nullptr;
 
     // State

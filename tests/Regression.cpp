@@ -366,10 +366,19 @@ struct AppRegressionAccess {
         ImGui::CreateContext(); ImPlot::CreateContext();
         auto& io=ImGui::GetIO(); io.IniFilename=nullptr; io.DisplaySize=ImVec2(1280,1000); io.DeltaTime=1.f/60;
         unsigned char* pixels; int width,height; io.Fonts->GetTexDataAsRGBA32(&pixels,&width,&height);
-        for (int frame=0;frame<2;++frame) {
+        for (int frame=0;frame<4;++frame) {
+            app.libraryPage_=frame/2;
             ImGui::NewFrame(); ImGui::SetNextWindowSize(ImVec2(1280,1000)); ImGui::Begin("Library UI");
             app.RenderMouseLibrary(); ImGui::End(); ImGui::Render();
             Check(ImGui::GetDrawData()->TotalVtxCount>0,"Mouse library page must render without a GPU");
+        }
+        MouseDevice previewDevice{}; previewDevice.path=L"test-interface"; previewDevice.name=L"Test device";
+        for (int frame=0;frame<2;++frame) {
+            ImGui::NewFrame(); ImGui::SetNextWindowSize(ImVec2(1280,1000)); ImGui::Begin("Link UI");
+            ImGui::PushID("Reference A"); ImGui::OpenPopup("Link this device"); ImGui::PopID();
+            app.RenderDeviceBinding("Reference A",&previewDevice);
+            ImGui::End(); ImGui::Render();
+            Check(ImGui::GetDrawData()->TotalVtxCount>0,"Device link dialog must render");
         }
         ImPlot::DestroyContext(); ImGui::DestroyContext();
         std::filesystem::remove(directory/L"Runs"/(key+".json")); std::filesystem::remove(directory/L"Runs"/(secondKey+".json"));
@@ -386,7 +395,7 @@ struct AppRegressionAccess {
             if (app.libraryLock_) { ReleaseMutex(app.libraryLock_); CloseHandle(app.libraryLock_); app.libraryLock_=nullptr; }
             app.libraryReadOnly_=true;
             ImGui::GetIO().IniFilename=nullptr;
-            app.currentSession_=session; app.RebuildPlotData(); app.state_=AppState::Ready;
+            app.currentSession_=session; app.RebuildPlotData(); app.state_=AppState::Ready; app.showLibrary_=false;
             app.mouseLibrary_.autoRank=false; // Soak tests must not change the user's library.
             app.ApplyAutoScaleB(); app.StartLatencyAnalysis();
             const auto start=std::chrono::steady_clock::now(); int reported=-1; size_t frames=0;
@@ -422,6 +431,7 @@ struct AppRegressionAccess {
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
         io.DisplaySize = ImVec2(1280, 1000); io.DeltaTime = 1.0f / 60.0f;
         unsigned char* pixels; int width, height; io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        Check(app.selectedLatencyMatch_>=0,"Analysis must select a match for inspection");
         app.selectedLatencyMatch_ = 0; app.focusLatencyMatch_ = true;
         const auto match = app.latencyFit_.matches.front();
         for (int frame=0; frame<2; ++frame) {
