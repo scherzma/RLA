@@ -29,3 +29,13 @@ Files are saved under `%LOCALAPPDATA%/RLA/RawInputProbe/USB-<date>-<pid>/`. The 
 The helper stops and deletes its own trace session in `finally`. If the helper is forcibly terminated, use an administrator terminal to stop and delete the `RLA-USB-Probe-<pid>` session shown by `logman query`. This does not remove saved ETL files.
 
 See [Microsoft's USB capture instructions and keyword definitions](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/how-to-capture-a-usb-event-trace).
+
+## Compare movement bytes
+
+Build with `./tools/RawInputProbe/build.ps1 -OutputFolder RawInputReportProbe`, then open `CompareReports.cmd`. This opens the separate report recorder. Use the same A-only, both, A-only sequence. Leave the mouse connections and DPI settings unchanged.
+
+This mode enables `PartialDataBusTrace`, which records USB payload bytes, including possible traffic from other USB devices. Do not type while the test window is open. The files stay local. The original `TraceUsb.cmd` continues to capture headers only.
+
+The probe stores up to 600,000 individual reports in preallocated memory, including zero movement, with QPC timestamps, device index, signed X/Y counts and flags. It saves a UTC/QPC clock anchor for alignment, HID value capabilities for each assigned mouse, and an explicit overflow count. Files are written after recording stops. HID capability reads use a zero-access device handle and do not change device settings. `--hid-info` writes a read-only capability inventory to the results directory for troubleshooting.
+
+Analysis must decode the correct HID report format, exclude other endpoints and zero-movement USB reports, check trace loss and sample overflow, and compare signed movement over short windows as well as matched report sequences. Similar total counts alone do not prove report combining. An absent `MOUSE_MOVE_NOCOALESCE` flag does not prove that a particular event was combined.

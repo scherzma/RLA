@@ -1,14 +1,19 @@
 // Independent diagnostic. No RLA capture, analysis, or rendering code is linked.
 #define NOMINMAX
 #include <windows.h>
+extern "C" {
+#include <hidsdi.h>
+}
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 namespace {
@@ -31,6 +36,15 @@ HWND window, buttons[3];
 HANDLE devices[2]{};
 std::wstring names[2];
 Counts counts[2];
+struct Sample { LONGLONG qpc; LONG dx,dy; USHORT flags; unsigned char device; };
+constexpr size_t maxSamples=600000;
+std::vector<Sample> samples;
+size_t sampleCount=0;
+unsigned sampleOverflow=0;
+bool reportData=false;
+ULONGLONG clockFileTime=0;
+LONGLONG clockQpcBefore=0,clockQpcAfter=0;
+nlohmann::json hidInfo[2];
 LONGLONG frequency=0, started=0, armAfter=0, lastPaint=0;
 int assigning=-1;
 bool recording=false;
@@ -56,6 +70,43 @@ std::string utf8(const std::wstring& s) {
     WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),result.data(),n,nullptr,nullptr);
     return result;
 }
+nlohmann::json readHidInfo(HANDLE device) {
+    using nlohmann::json;
+    auto path=deviceName(device);
+    const auto guid=path.rfind(L'{');
+    if(guid==std::wstring::npos) return {{"note","No HID interface path"}};
+    path.replace(guid,std::wstring::npos,L"{4d1e55b2-f16f-11cf-88cb-001111000030}");
+    HANDLE h=CreateFileW(path.c_str(),0,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+    if(h==INVALID_HANDLE_VALUE) return {{"error",GetLastError()},{"hidPath",utf8(path)}};
+    PHIDP_PREPARSED_DATA ppd=nullptr;
+    const bool gotData=HidD_GetPreparsedData(h,&ppd)!=FALSE;
+    const DWORD error=gotData?0:GetLastError();
+    CloseHandle(h);
+    if(!gotData) return {{"error",error},{"hidPath",utf8(path)}};
+    std::unique_ptr<_HIDP_PREPARSED_DATA,decltype(&HidD_FreePreparsedData)> owner(ppd,HidD_FreePreparsedData);
+    HIDP_CAPS caps{};
+    NTSTATUS result=HidP_GetCaps(ppd,&caps);
+    json j={{"capsStatus",result},{"hidPath",utf8(path)}};
+    if(result!=HIDP_STATUS_SUCCESS) return j;
+    j["inputReportByteLength"]=caps.InputReportByteLength;
+    USHORT count=caps.NumberInputValueCaps;
+    std::vector<HIDP_VALUE_CAPS> values(count);
+    result=HidP_GetValueCaps(HidP_Input,values.data(),&count,ppd);
+    j["valueCapsStatus"]=result;
+    if(result==HIDP_STATUS_SUCCESS) for(USHORT i=0;i<count;++i) {
+        const auto& v=values[i];
+        j["values"].push_back({{"usagePage",v.UsagePage},{"reportId",v.ReportID},
+            {"linkCollection",v.LinkCollection},{"bitSize",v.BitSize},
+            {"logicalMin",v.LogicalMin},{"logicalMax",v.LogicalMax},{"absolute",bool(v.IsAbsolute)},
+            {"usageMin",v.IsRange?v.Range.UsageMin:v.NotRange.Usage},
+            {"usageMax",v.IsRange?v.Range.UsageMax:v.NotRange.Usage}});
+    }
+    return j;
+}
+void appendSample(LONGLONG qpc,int d,LONG dx,LONG dy,USHORT flags) {
+    if(sampleCount<samples.size()) samples[sampleCount++]={qpc,dx,dy,flags,static_cast<unsigned char>(d)};
+    else ++sampleOverflow;
+}
 void save(bool complete, double duration) {
     using nlohmann::json;
     json j={{"version",1},{"recorder","Independent WM_INPUT / GetRawInputData probe"},
@@ -70,6 +121,19 @@ void save(bool complete, double duration) {
         j[d==0?"A":"B"]={{"device",utf8(names[d])},{"bins",std::move(bins)}};
     }
     j["binColumns"]={"reports","movementReports","noCoalesceFlagReports"};
+    if(reportData) {
+        j["version"]=2;
+        j["startQpc"]=started;
+        j["clockAnchor"]={{"fileTimeUtc100ns",clockFileTime},{"qpcBefore",clockQpcBefore},{"qpcAfter",clockQpcAfter}};
+        j["sampleOverflow"]=sampleOverflow;
+        j["sampleColumns"]={"qpc","deviceIndex","dx","dy","flags"};
+        auto rows=nlohmann::json::array();
+        for(size_t i=0;i<sampleCount;++i) {
+            const auto& s=samples[i]; rows.push_back({s.qpc,s.device,s.dx,s.dy,s.flags});
+        }
+        j["samples"]=std::move(rows);
+        j["A"]["hid"]=hidInfo[0]; j["B"]["hid"]=hidInfo[1];
+    }
     std::wostringstream summary;
     summary.precision(0); summary<<std::fixed;
     for (int i=0;i<3;++i) {
@@ -108,6 +172,15 @@ void start() {
         status=L"Assign two different mice first."; return;
     }
     assigning=-1;
+    if(reportData) {
+        try {
+            samples.resize(maxSamples); sampleCount=0; sampleOverflow=0;
+            hidInfo[0]=readHidInfo(devices[0]); hidInfo[1]=readHidInfo(devices[1]);
+        } catch(const std::exception&) { status=L"Cannot prepare report storage. Test not started."; return; }
+        FILETIME ft;
+        clockQpcBefore=now(); GetSystemTimePreciseAsFileTime(&ft); clockQpcAfter=now();
+        clockFileTime=(ULONGLONG(ft.dwHighDateTime)<<32)|ft.dwLowDateTime;
+    }
     counts[0]={}; counts[1]={}; readErrors=otherReports=absoluteReports=0;
     if (!registration(true)) { status=L"Raw Input registration failed."; return; }
     RECT r; GetClientRect(window,&r);
@@ -148,7 +221,11 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l) {
                 if (m.usFlags&MOUSE_MOVE_ABSOLUTE) ++absoluteReports;
                 else {
                     int d=input.header.hDevice==devices[0]?0:input.header.hDevice==devices[1]?1:-1;
-                    if (d>=0) counts[d].add((t-started)*1000.0/frequency,moving,(m.usFlags&MOUSE_MOVE_NOCOALESCE)!=0);
+                    if (d>=0) {
+                        const double ms=(t-started)*1000.0/frequency;
+                        counts[d].add(ms,moving,(m.usFlags&MOUSE_MOVE_NOCOALESCE)!=0);
+                        if(reportData && ms>=0 && ms<18000) appendSample(t,d,m.lLastX,m.lLastY,m.usFlags);
+                    }
                     else ++otherReports;
                 }
             }
@@ -168,7 +245,8 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l) {
     case WM_PAINT: {
         PAINTSTRUCT paint; auto dc=BeginPaint(h,&paint);
         SelectObject(dc,GetStockObject(DEFAULT_GUI_FONT)); SetBkMode(dc,TRANSPARENT);
-        std::wstring text=L"Independent Raw Input test - no RLA code, graphs, or USB tracing\n\n";
+        std::wstring text=reportData?L"Report comparison - USB tracing runs in the helper. Do not type during capture.\n\n":
+            L"Independent Raw Input test - no RLA code, graphs, or USB tracing\n\n";
         text+=L"A: "+(devices[0]?names[0]:L"Not assigned")+L"\nB: "+(devices[1]?names[1]:L"Not assigned")+L"\n\n";
         if(recording) {
             double s=elapsed()/1000;
@@ -186,13 +264,34 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l) {
 }
 }
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR args,int show) {
+    if(std::wstring(args)==L"--hid-info") {
+        UINT count=0;
+        if(GetRawInputDeviceList(nullptr,&count,sizeof(RAWINPUTDEVICELIST))==UINT(-1)) return 1;
+        std::vector<RAWINPUTDEVICELIST> list(count);
+        if(GetRawInputDeviceList(list.data(),&count,sizeof(RAWINPUTDEVICELIST))==UINT(-1)) return 1;
+        auto info=nlohmann::json::array();
+        for(UINT i=0;i<count;++i) if(list[i].dwType==RIM_TYPEMOUSE)
+            info.push_back({{"device",utf8(deviceName(list[i].hDevice))},{"hid",readHidInfo(list[i].hDevice)}});
+        wchar_t local[32768];
+        DWORD length=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
+        if(!length || length>=32768) return 1;
+        auto path=std::filesystem::path(local)/L"RLA"/L"RawInputProbe";
+        std::filesystem::create_directories(path);
+        std::ofstream file(path/L"hid-info.json"); file<<info.dump(2);
+        return file.good()?0:1;
+    }
     if (std::wstring(args)==L"--self-test") {
         Counts c; c.add(-1,true,true); c.add(18000,true,true);
         for(int i=4000;i<7500;++i) { c.add(i,true,true); c.add(i,false,false); }
         c.add(7500,true,false);
+        samples.resize(2);
+        appendSample(10,0,-123,456,8); appendSample(11,1,0,0,0); appendSample(12,1,1,2,0);
         return c.rate(4000,7500)==1000 && c.bins[400].reports==20 &&
-            c.bins[400].noCoalesce==10 && c.bins[1799].reports==0 ? 0:1;
+            c.bins[400].noCoalesce==10 && c.bins[1799].reports==0 &&
+            sampleCount==2 && sampleOverflow==1 && samples[0].dx==-123 &&
+            samples[0].dy==456 && samples[0].flags==8 && samples[1].device==1 ? 0:1;
     }
+    reportData=std::wstring(args)==L"--report-data";
     LARGE_INTEGER f; QueryPerformanceFrequency(&f); frequency=f.QuadPart;
     WNDCLASSW cls{}; cls.lpfnWndProc=proc; cls.hInstance=instance;
     cls.lpszClassName=L"IndependentRawInputProbe"; cls.hCursor=LoadCursor(nullptr,IDC_ARROW);

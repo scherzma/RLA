@@ -1,14 +1,17 @@
-param([switch]$Elevated)
+param([switch]$Elevated, [switch]$ReportData)
 $ErrorActionPreference = 'Stop'
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     if ($Elevated) { throw 'USB tracing requires administrator rights.' }
-    Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), '-Elevated')
+    $elevationArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), '-Elevated')
+    if ($ReportData) { $elevationArguments += '-ReportData' }
+    Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $elevationArguments
     exit
 }
 
 $repoPath = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $probePath = Join-Path $repoPath 'x64/RawInputProbe/RawInputProbe.exe'
+if ($ReportData) { $probePath = Join-Path $repoPath 'x64/RawInputReportProbe/RawInputProbe.exe' }
 $resultsPath = Join-Path $env:LOCALAPPDATA 'RLA/RawInputProbe'
 $tracePath = Join-Path $resultsPath ('USB-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $PID)
 New-Item -ItemType Directory -Force -Path $tracePath | Out-Null
@@ -24,18 +27,20 @@ function Invoke-Logman([string[]]$Arguments) {
 }
 try {
     if (-not (Test-Path -LiteralPath $probePath)) { throw 'Build RawInputProbe first.' }
-    # HeadersBusTrace captures transfer metadata without USB data payloads.
+    # PartialDataBusTrace is opt-in for the movement-byte comparison.
     Invoke-Logman @('create','trace','-n',$sessionName,'-o',(Join-Path $tracePath 'usb.etl'),'-f','bincirc','-max','256','-nb','64','256','-bs','128')
     $created = $true
     foreach ($provider in @('Microsoft-Windows-USB-USBXHCI','Microsoft-Windows-USB-UCX','Microsoft-Windows-USB-USBHUB3')) {
-        Invoke-Logman @('update','trace','-n',$sessionName,'-p',$provider,'0x41','5')
+        $keywords = if ($ReportData) { '0x81' } else { '0x41' }
+        Invoke-Logman @('update','trace','-n',$sessionName,'-p',$provider,$keywords,'5')
     }
     $oldFiles = @(Get-ChildItem -LiteralPath $resultsPath -Filter 'probe-*.json' | Select-Object -ExpandProperty FullName)
     Invoke-Logman @('start','-n',$sessionName)
     $running = $true
     $startedUtc = [DateTime]::UtcNow
     # This is the interactive test window, not a background service.
-    $probe = Start-Process -FilePath $probePath -PassThru
+    if ($ReportData) { $probe = Start-Process -FilePath $probePath -ArgumentList '--report-data' -PassThru }
+    else { $probe = Start-Process -FilePath $probePath -PassThru }
     $result = $null
     while (([DateTime]::UtcNow - $startedUtc).TotalSeconds -lt 120) {
         $result = Get-ChildItem -LiteralPath $resultsPath -Filter "probe-*-$($probe.Id).json" |
@@ -50,8 +55,8 @@ try {
         traceStartedUtc=$startedUtc.ToString('o'); traceStoppedUtc=[DateTime]::UtcNow.ToString('o')
         probePid=$probe.Id; resultFile=if($result){$result.Name}else{$null}
         resultWrittenUtc=if($result){$result.LastWriteTimeUtc.ToString('o')}else{$null}
-        keywords='Default, HeadersBusTrace'; maximumMiB=256
-        note='USB driver events, not electrical bus measurements. Check ETW event loss before comparing counts. Stage alignment from result file time is approximate.'
+        keywords=if($ReportData){'Default, PartialDataBusTrace'}else{'Default, HeadersBusTrace'}; maximumMiB=256
+        note=if($ReportData){'Contains USB payload bytes. Check ETW loss and sampleOverflow. Use the probe clockAnchor for alignment; timestamps measure driver/application processing, not electrical arrival.'}else{'USB driver events, not electrical bus measurements. Check ETW event loss before comparing counts. Stage alignment from result file time is approximate.'}
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $tracePath 'capture.json') -Encoding utf8
 } catch {
     $_ | Out-File -LiteralPath $logPath -Append
