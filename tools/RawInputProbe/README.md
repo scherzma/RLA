@@ -41,3 +41,11 @@ The probe stores up to 600,000 individual reports in preallocated memory, includ
 Analysis must decode the correct HID report format, exclude other endpoints and zero-movement USB reports, check trace loss and sample overflow, and compare signed movement over short windows as well as matched report sequences. Similar total counts alone do not prove report combining. An absent `MOUSE_MOVE_NOCOALESCE` flag does not prove that a particular event was combined.
 
 The 2026-09-22 partial-data trace contained only transfer headers for the mouse completions. Enabling the payload keyword does not guarantee that usable USB report bytes are present. Check the ETL contents before attempting a byte comparison or requesting another recording.
+
+## USBPcap comparison
+
+After installing USBPcap and restarting, `CapturePackets.cmd` opens the verified report-mode probe and records packets from two selected USB device addresses. It requires a local `%LOCALAPPDATA%/RLA/RawInputProbe/packet-devices.json` mapping (interface, address, and exact extcap device listing). Prepare this mapping from the current USB topology and verify the injected device descriptors before use. Do not assume interface numbers are stable across port changes or restarts. The helper refuses a changed device listing.
+
+Results are stored in `Packets-<date>-<pid>/` under the probe results folder. The helper stops after a result, 120 seconds, or a 256 MiB size limit (checked every 250 ms). It starts only the two filtered captures. `-CheckOnly` performs a short startup check without opening the probe. Device listings are read through redirected process output, which also works under Windows PowerShell 5.
+
+Capture processes are terminated two seconds after the probe saves its result. A final PCAP record can be incomplete; analysis must reject that record and check that both files cover the measured windows. The helper does not measure driver buffer loss. The 2026-09-22 startup check verified that hub2/address1 was VID 3367/PID 1978 and hub5/address1 was VID 1915/PID 3301. These values are local test observations, not portable defaults.
