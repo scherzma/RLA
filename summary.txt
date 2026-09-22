@@ -1,0 +1,31 @@
+Relative Latency Analyzer (RLA) Project Summary
+
+RLA is a specialized software tool designed to measure and compare the input latency (delay) between two different computer mice. It captures high-precision timestamped movement data from two mice simultaneously to allow users to visualize delay differences.
+
+How it works:
+1.  **Setup**: Connect two mice to the same computer.
+2.  **Assignment**: Sequentially "wiggle" each mouse to assign them as "Reference Mouse (A)" and "Test Mouse (B)".
+3.  **Recording**: Start the recording and physically move both mice simultaneously (typically by bumping them together).
+4.  **Visual Analysis**: The software plots the movement data on a high-resolution graph. Users manually inspect the graph to measure the time difference between the reaction of Mouse A and Mouse B.
+
+Key Features:
+
+**High-Performance Graphing:**
+*   **Three Modes**: Select "Movement magnitude", "Raw X/Y Deltas", or "Event timing / Hz".
+*   **Real-Time Visualization**: Data is plotted live as it is recorded.
+*   **Manual Inspection**: Users can zoom and pan the graph to find the exact millisecond separation between the two mice's movement start/stop points.
+
+**Graph Data Tools (Post-Processing):**
+*   **Smoothing**: Apply Moving Average or Time-Window smoothing to clean up noisy sensor data.
+*   **Time Binning**: Aggregate events into discrete time windows (e.g., 1ms bins) to standardize data from mice with different polling rates (e.g., 1000Hz vs 8000Hz).
+*   **Gap Interpolation**: Automatically fills gaps in data with zero-velocity points to clearly visualize when a mouse has stopped moving.
+*   **Y-Axis Scaling**: Scale the "Test Mouse (B)" data to visually match the amplitude of the Reference Mouse, making it easier to compare shapes even if DPI settings differ.
+*   **Auto Scale B**: Fit the scale from sections with matching movement direction and shape. Reject weak or conflicting matches. Use common time bins for different event rates.
+*   **Event Timing**: Show raw and averaged intervals, rates over time, and interval statistics for both mice. Rates describe recorded movement events, not hardware USB polling.
+*   **Data Markers**: Toggle visible dots for individual data points to see the raw polling events.
+
+**Session Management:**
+*   **Save/Load**: Save recorded sessions to JSON files for later review.
+*   **Export**: Export raw timestamped data to CSV for external analysis in spreadsheet software.
+
+*Note: This tool relies on visual inspection of the graph data; it does not currently provide an automated "winner" or calculated millisecond difference value.*

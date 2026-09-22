@@ -42,8 +42,11 @@ public:
     double GetEventRateA() const { return eventRateA_; }
     double GetEventRateB() const { return eventRateB_; }
     void UpdateEventRates(size_t eventsA, size_t eventsB);
+    void ResetEventRates();
 
 private:
+    friend struct InputEngineRegressionAccess;
+
     // Input thread function - runs dedicated message loop
     void InputThreadFunc();
 

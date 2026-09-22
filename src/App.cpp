@@ -67,8 +67,10 @@ void App::Update() {
             }
         }
         // Recording
-        else if (state_ == AppState::Recording) {
-            double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / qpcFrequency_;
+        else if (state_ == AppState::Recording &&
+                 event.timestamp >= currentSession_.startTimestamp &&
+                 (currentSession_.endTimestamp == 0 || event.timestamp <= currentSession_.endTimestamp)) {
+            double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
             double velocity = CalculateVelocity(event.deltaX, event.deltaY);
 
             if (deviceManager_->IsMouseA(event.deviceHandle)) {
@@ -113,16 +115,18 @@ void App::RenderMainWindow() {
     // Menu bar
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Save Session...", "Ctrl+S")) {
+            ImGui::BeginDisabled(state_ == AppState::Recording);
+            if (ImGui::MenuItem("Save Session...")) {
                 SaveSession();
             }
-            if (ImGui::MenuItem("Load Session...", "Ctrl+O")) {
+            if (ImGui::MenuItem("Load Session...")) {
                 LoadSession();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Export CSV...")) {
                 ExportCsv();
             }
+            ImGui::EndDisabled();
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
                 shouldQuit_ = true;
@@ -152,6 +156,7 @@ void App::RenderMainWindow() {
 }
 
 void App::RenderDevicePanel() {
+    ImGui::BeginDisabled(state_ == AppState::Recording);
     ImGui::Text("Device Assignment");
 
     // Mouse A
@@ -228,6 +233,7 @@ void App::RenderDevicePanel() {
             statusMessage_ = "Assignments reset";
         }
     }
+    ImGui::EndDisabled();
 }
 
 void App::RenderControlPanel() {
@@ -275,14 +281,147 @@ void App::RenderControlPanel() {
     ImGui::Text("Buffer: %.1f%%", utilization);
 }
 
+void App::ApplyAutoScaleB() {
+    const auto fit = Analyzer::FitScaleB(currentSession_);
+    autoScaleMessage_ = fit.message;
+    if (!fit.valid) return;
+    yScaleB_ = static_cast<float>(fit.scale);
+    enableYScaleB_ = true;
+    // Equal time bins make count amplitudes comparable at different event rates.
+    enableTimeBinning_ = true;
+    timeBinMs_ = static_cast<float>(fit.binMs);
+    autoScaleMessage_ = std::format("Auto: x{:.3f}. Used {} of {} sections ({:.0f} ms each). Time bins: {:.0f} ms.",
+        fit.scale, fit.matchedWindows, fit.testedWindows, fit.windowMs, fit.binMs);
+}
+
+void App::RenderScaleControls() {
+    if (ImGui::Checkbox("Scale B", &enableYScaleB_)) autoScaleMessage_.clear();
+    if (enableYScaleB_) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::SliderFloat("##YScaleB", &yScaleB_, 0.01f, 100.0f, "x%.3f", ImGuiSliderFlags_Logarithmic))
+            autoScaleMessage_.clear();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(75);
+        if (ImGui::InputFloat("##YScaleBInput", &yScaleB_, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue)) {
+            yScaleB_ = std::isfinite(yScaleB_) ? std::clamp(yScaleB_, 0.01f, 100.0f) : 1.0f;
+            autoScaleMessage_.clear();
+        }
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(state_ == AppState::Recording || currentSession_.eventsA.empty() || currentSession_.eventsB.empty());
+    if (ImGui::Button("Auto Scale B")) ApplyAutoScaleB();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Stop recording, then fit B to A from matching direction and movement shape.\n"
+            "Rejects idle, conflicting and weak matches. Needs at least three matching sections.\n"
+            "Enables common time bins (2 ms or longer for slower mice). Original counts and timestamps stay unchanged.");
+    }
+    if (!autoScaleMessage_.empty()) ImGui::TextWrapped("%s", autoScaleMessage_.c_str());
+}
+
+void App::RenderTimingPanel() {
+    ImGui::SetNextItemWidth(180);
+    if (ImGui::SliderFloat("Rate window", &rateWindowMs_, 10.0f, 500.0f, "%.0f ms")) timingDirty_ = true;
+    ImGui::SameLine();
+    ImGui::Checkbox("Show 1000 / interval Hz", &showInstantHz_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Follow recording", &followTiming_);
+    ImGui::TextWrapped("Recorded movement events only. Idle gaps are included. These are application arrival times, not USB polling times.");
+
+    const double now = ImGui::GetTime();
+    if (timingDirty_ || (state_ == AppState::Recording && now - lastTimingUpdate_ >= 0.1)) {
+        int64_t end = currentSession_.endTimestamp;
+        if (state_ == AppState::Recording) {
+            LARGE_INTEGER counter;
+            QueryPerformanceCounter(&counter);
+            end = counter.QuadPart;
+        }
+        const double endMs = currentSession_.qpcFrequency > 0 ?
+            (end - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency : 0;
+        timingA_ = Analyzer::BuildEventTiming(currentSession_.eventsA, currentSession_.startTimestamp,
+            currentSession_.qpcFrequency, endMs, rateWindowMs_);
+        timingB_ = Analyzer::BuildEventTiming(currentSession_.eventsB, currentSession_.startTimestamp,
+            currentSession_.qpcFrequency, endMs, rateWindowMs_);
+        timingDirty_ = false;
+        lastTimingUpdate_ = now;
+    }
+    if (ImGui::BeginTable("Timing summary", 6, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg)) {
+        for (const char* label : { "Mouse", "Events", "Median ms", "P95 ms", "Max gap ms", "Intervals <= 0" })
+            ImGui::TableSetupColumn(label);
+        ImGui::TableHeadersRow();
+        auto row = [](const char* label, size_t count, const EventTiming& data) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(label);
+            ImGui::TableNextColumn(); ImGui::Text("%zu", count);
+            for (double value : { data.medianMs, data.p95Ms, data.maxMs }) {
+                ImGui::TableNextColumn();
+                if (value > 0) ImGui::Text("%.3f", value); else ImGui::TextUnformatted("--");
+            }
+            ImGui::TableNextColumn(); ImGui::Text("%zu", data.nonPositiveIntervals);
+        };
+        row("A (Reference)", currentSession_.eventsA.size(), timingA_);
+        row("B (Test)", currentSession_.eventsB.size(), timingB_);
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled("Interval statistics use positive intervals. Rate = events in the window / window duration.");
+    if (currentSession_.eventsA.empty() && currentSession_.eventsB.empty()) {
+        ImGui::TextUnformatted("Record movement or load a session to see event timing.");
+        return;
+    }
+    const float height = (std::max)(260.0f, ImGui::GetContentRegionAvail().y - 35.0f);
+    const ImPlotAxisFlags axisFlags = state_ == AppState::Recording && followTiming_ ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
+    if (ImPlot::BeginSubplots("Event timing", 2, 1, ImVec2(-1, height), ImPlotSubplotFlags_LinkCols)) {
+        const ImVec4 colorA(0.2f, 0.6f, 1.0f, 1.0f), colorB(1.0f, 0.4f, 0.2f, 1.0f);
+        if (ImPlot::BeginPlot("Time between events")) {
+            ImPlot::SetupAxes("Time (ms)", "Interval (ms)", axisFlags, axisFlags);
+            auto plot = [](const char* label, const char* meanLabel, const EventTiming& data, ImVec4 color) {
+                if (data.timesMs.empty()) return;
+                ImVec4 faint = color; faint.w = 0.4f;
+                ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 2.0f, faint, 0.0f, faint);
+                ImPlot::PlotScatter(label, data.timesMs.data(), data.intervalsMs.data(), static_cast<int>(data.timesMs.size()));
+                ImPlot::SetNextLineStyle(color, 2.0f);
+                ImPlot::PlotLine(meanLabel, data.timesMs.data(), data.meanIntervalsMs.data(), static_cast<int>(data.timesMs.size()));
+            };
+            plot("Mouse A - raw", "Mouse A - mean", timingA_, colorA);
+            plot("Mouse B - raw", "Mouse B - mean", timingB_, colorB);
+            ImPlot::EndPlot();
+        }
+        if (ImPlot::BeginPlot("Movement event rate")) {
+            ImPlot::SetupAxes("Time (ms)", "Rate (Hz)", axisFlags, axisFlags);
+            auto plot = [&](const char* label, const char* rawLabel, const EventTiming& data, ImVec4 color) {
+                if (showInstantHz_ && !data.timesMs.empty()) {
+                    ImVec4 faint = color; faint.w = 0.35f;
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 1.5f, faint, 0.0f, faint);
+                    ImPlot::PlotScatter(rawLabel, data.timesMs.data(), data.instantHz.data(), static_cast<int>(data.timesMs.size()));
+                }
+                if (!data.rateTimesMs.empty()) {
+                    ImPlot::SetNextLineStyle(color, 2.0f);
+                    ImPlot::PlotLine(label, data.rateTimesMs.data(), data.ratesHz.data(), static_cast<int>(data.rateTimesMs.size()));
+                }
+            };
+            plot("Mouse A - window rate", "Mouse A - interval Hz", timingA_, colorA);
+            plot("Mouse B - window rate", "Mouse B - interval Hz", timingB_, colorB);
+            ImPlot::EndPlot();
+        }
+        ImPlot::EndSubplots();
+    }
+}
+
 void App::RenderPlotPanel() {
     // Plot mode selector
     ImGui::Text("Plot Mode:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    const char* plotModes[] = { "Velocity", "Raw X/Y Deltas" };
-    ImGui::Combo("##PlotMode", &plotMode_, plotModes, 2);
+    ImGui::SetNextItemWidth(210);
+    const char* plotModes[] = { "Movement magnitude", "Raw X/Y Deltas", "Event timing / Hz" };
+    ImGui::Combo("##PlotMode", &plotMode_, plotModes, 3);
     ImGui::Separator();
+
+    if (plotMode_ == 2) {
+        RenderTimingPanel();
+        return;
+    }
+    RenderScaleControls();
 
     // Calculate plot size
     float reservedHeight = 80.0f;
@@ -308,24 +447,11 @@ void App::RenderPlotPanel() {
             }
         }
 
-        ImGui::SameLine();
-        ImGui::Checkbox("Scale B", &enableYScaleB_);
-        if (enableYScaleB_) {
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(120);
-            ImGui::SliderFloat("##YScaleB", &yScaleB_, 0.01f, 100.0f, "x%.3f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(60);
-            if (ImGui::InputFloat("##YScaleBInput", &yScaleB_, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue)) {
-                yScaleB_ = std::clamp(yScaleB_, 0.01f, 100.0f);
-            }
-        }
-
         ImGui::Checkbox("Time Binning", &enableTimeBinning_);
         if (enableTimeBinning_) {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(100);
-            ImGui::SliderFloat("##BinSize", &timeBinMs_, 0.1f, 5.0f, "%.1f ms");
+            ImGui::SliderFloat("##BinSize", &timeBinMs_, 0.1f, 50.0f, "%.1f ms", ImGuiSliderFlags_Logarithmic);
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered()) {
@@ -354,8 +480,8 @@ void App::RenderPlotPanel() {
         }
 
         // Velocity plot
-        if (ImPlot::BeginPlot("Velocity vs Time", plotSize)) {
-            ImPlot::SetupAxes("Time (ms)", "Velocity (counts)");
+        if (ImPlot::BeginPlot("Movement magnitude vs Time", plotSize)) {
+            ImPlot::SetupAxes("Time (ms)", enableTimeBinning_ ? "Counts / bin" : "Counts / event");
 
             double maxTime = 100.0;
             if (state_ == AppState::Recording) {
@@ -388,7 +514,9 @@ void App::RenderPlotPanel() {
                 // 2. Apply gap interpolation SECOND (fills gaps with zero-velocity points)
                 if (enableGapInterpolation_ && !plotTimesA.empty()) {
                     std::vector<double> interpTimes, interpVels;
-                    InterpolateGaps(plotTimesA, plotVelsA, interpTimes, interpVels, gapThresholdMs_, gapSampleIntervalMs_);
+                    InterpolateGaps(plotTimesA, plotVelsA, interpTimes, interpVels,
+                        enableTimeBinning_ ? (std::max)(gapThresholdMs_, timeBinMs_ * 1.5f) : gapThresholdMs_,
+                        enableTimeBinning_ ? timeBinMs_ : gapSampleIntervalMs_);
                     plotTimesA = std::move(interpTimes);
                     plotVelsA = std::move(interpVels);
                 }
@@ -430,7 +558,9 @@ void App::RenderPlotPanel() {
                 // 2. Apply gap interpolation SECOND (fills gaps with zero-velocity points)
                 if (enableGapInterpolation_ && !plotTimesB.empty()) {
                     std::vector<double> interpTimes, interpVels;
-                    InterpolateGaps(plotTimesB, plotVelsB, interpTimes, interpVels, gapThresholdMs_, gapSampleIntervalMs_);
+                    InterpolateGaps(plotTimesB, plotVelsB, interpTimes, interpVels,
+                        enableTimeBinning_ ? (std::max)(gapThresholdMs_, timeBinMs_ * 1.5f) : gapThresholdMs_,
+                        enableTimeBinning_ ? timeBinMs_ : gapSampleIntervalMs_);
                     plotTimesB = std::move(interpTimes);
                     plotVelsB = std::move(interpVels);
                 }
@@ -485,7 +615,7 @@ void App::RenderPlotPanel() {
         if (enableTimeBinning_) {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(100);
-            ImGui::SliderFloat("##BinSizeXY", &timeBinMs_, 0.1f, 5.0f, "%.1f ms");
+            ImGui::SliderFloat("##BinSizeXY", &timeBinMs_, 0.1f, 50.0f, "%.1f ms", ImGuiSliderFlags_Logarithmic);
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered()) {
@@ -539,7 +669,7 @@ void App::RenderPlotPanel() {
                 rawY.reserve(events.size());
 
                 for (const auto& event : events) {
-                    double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / qpcFrequency_;
+                    double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
                     rawTimes.push_back(timeMs);
                     rawX.push_back(static_cast<double>(event.deltaX));
                     rawY.push_back(static_cast<double>(event.deltaY));
@@ -645,6 +775,10 @@ void App::RenderPlotPanel() {
             if (!eventsB.empty()) {
                 std::vector<double> timesB, deltasXB, deltasYB;
                 processXYData(eventsB, timesB, deltasXB, deltasYB);
+                if (enableYScaleB_) {
+                    for (auto& value : deltasXB) value *= yScaleB_;
+                    for (auto& value : deltasYB) value *= yScaleB_;
+                }
 
                 if (!timesB.empty()) {
                     ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 1.5f);
@@ -667,7 +801,7 @@ void App::RenderPlotPanel() {
 }
 
 double App::CalculateVelocity(int32_t dx, int32_t dy) {
-    return std::sqrt(static_cast<double>(dx * dx + dy * dy));
+    return std::hypot(static_cast<double>(dx), static_cast<double>(dy));
 }
 
 void App::RenderStatusBar() {
@@ -715,7 +849,14 @@ void App::TransitionTo(AppState newState) {
 }
 
 void App::StartRecording() {
+    deviceManager_->CancelAssignment();
     currentSession_ = RecordingSession{};
+    enableYScaleB_ = false;
+    yScaleB_ = 1.0f;
+    autoScaleMessage_.clear();
+    timingDirty_ = true;
+    analysisResult_ = AnalysisResult{};
+    inputEngine_->ResetEventRates();
 
     LARGE_INTEGER timestamp;
     QueryPerformanceCounter(&timestamp);
@@ -736,6 +877,9 @@ void App::StopRecording() {
     LARGE_INTEGER timestamp;
     QueryPerformanceCounter(&timestamp);
     currentSession_.endTimestamp = timestamp.QuadPart;
+    // Include queued events up to the stop timestamp.
+    Update();
+    timingDirty_ = true;
 
     statusMessage_ = std::format("Recording stopped. A={} events, B={} events",
                                  currentSession_.eventsA.size(),
@@ -809,7 +953,9 @@ void App::LoadSession() {
     if (GetOpenFileNameA(&ofn)) {
         auto session = dataStore_->LoadFromJson(filename);
         if (session) {
-            currentSession_ = *session;
+            deviceManager_->CancelAssignment();
+            currentSession_ = std::move(*session);
+            RebuildPlotData();
             analysisResult_ = AnalysisResult{}; // Clear analysis
             TransitionTo(AppState::Ready);
             statusMessage_ = std::format("Session loaded. A={} events, B={} events",
@@ -820,6 +966,27 @@ void App::LoadSession() {
             statusMessage_ = "Load failed: " + dataStore_->GetLastError();
         }
     }
+}
+
+void App::RebuildPlotData() {
+    enableYScaleB_ = false;
+    yScaleB_ = 1.0f;
+    autoScaleMessage_.clear();
+    timingDirty_ = true;
+    auto rebuild = [this](const std::vector<MouseEvent>& events,
+                          std::vector<double>& times, std::vector<double>& values) {
+        times.clear();
+        values.clear();
+        times.reserve(events.size());
+        values.reserve(events.size());
+        for (const auto& event : events) {
+            times.push_back((event.timestamp - currentSession_.startTimestamp) *
+                            1000.0 / currentSession_.qpcFrequency);
+            values.push_back(CalculateVelocity(event.deltaX, event.deltaY));
+        }
+    };
+    rebuild(currentSession_.eventsA, liveTimesA_, liveVelocitiesA_);
+    rebuild(currentSession_.eventsB, liveTimesB_, liveVelocitiesB_);
 }
 
 void App::ExportCsv() {
@@ -914,12 +1081,12 @@ void App::ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startT
     outTimes.clear();
     outVelocities.clear();
 
-    if (events.empty() || binMs <= 0 || qpcFrequency_ == 0) return;
+    if (events.empty() || binMs <= 0 || currentSession_.qpcFrequency <= 0) return;
 
     size_t i = 0;
     while (i < events.size()) {
         // Calculate bin start time in ms
-        double eventTimeMs = (events[i].timestamp - startTimestamp) * 1000.0 / qpcFrequency_;
+        double eventTimeMs = (events[i].timestamp - startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
         double binStart = std::floor(eventTimeMs / binMs) * binMs;
         double binEnd = binStart + binMs;
 
@@ -929,7 +1096,7 @@ void App::ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startT
         int count = 0;
 
         while (i < events.size()) {
-            double t = (events[i].timestamp - startTimestamp) * 1000.0 / qpcFrequency_;
+            double t = (events[i].timestamp - startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
             if (t >= binEnd) break;
 
             sumDx += events[i].deltaX;
@@ -942,7 +1109,7 @@ void App::ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startT
             // Use bin center as the time point
             outTimes.push_back(binStart + binMs / 2.0);
             // Calculate velocity from summed deltas
-            outVelocities.push_back(std::sqrt(static_cast<double>(sumDx * sumDx + sumDy * sumDy)));
+            outVelocities.push_back(std::hypot(static_cast<double>(sumDx), static_cast<double>(sumDy)));
         }
     }
 }

@@ -1,0 +1,33 @@
+# Relative Latency Analyzer
+
+RLA records movement from two mice through Windows Raw Input. Use the plots to compare their movement and timing.
+
+## Use
+
+1. Assign the reference mouse as A and the test mouse as B.
+2. Record both mice moving together. Include changes in speed or direction.
+3. Stop recording. Select **Auto Scale B** to fit B's movement amplitude to A.
+4. Select **Event timing / Hz** in **Plot Mode** to inspect intervals and event rates.
+
+Auto Scale B checks direction and movement shape in separate sections. It excludes weak matches, idle sections, and conflicting scale estimates. It needs at least three matching sections. A failed fit leaves the current scale unchanged.
+
+The fit uses common time bins, normally 2 ms. Slower event streams use larger bins. Each section spans at least 50 ms and eight bins. The fit checks offsets up to 10 ms in whole bins. These offsets only help find matching movement; plotted timestamps stay unchanged. The median scale from the largest consistent group is used. That group must contain more than half of the accepted estimates and at least three sections. This is a heuristic, not a device calibration or a latency measurement.
+
+Auto Scale B enables time binning so different event rates do not change the amplitude comparison. The multiplier applies to both movement magnitude and X/Y plots. Manual scaling remains available. Loading or starting a recording clears the previous scale. Saved events and CSV data retain their original values.
+
+The timing view includes:
+
+- Raw intervals and a moving mean over the selected window.
+- Event rates over a 10–500 ms window, including zero rates during idle periods.
+- Optional per-interval rates, calculated as `1000 / interval_ms`.
+- Event counts, median and 95th-percentile intervals, maximum gaps, and counts of non-positive intervals. Interval statistics use positive intervals only.
+
+The two timing plots share their time axis. Statistics cover the full recording. The rate uses the number of events in `(time - window, time]`, divided by the window duration. Recordings shorter than the window use their available duration. Timing data refreshes at most ten times per second during recording.
+
+The capture code stores movement events only. Timestamps are taken when the application processes Raw Input. Thus, the plots show observed movement-event arrival times, not hardware USB polling times. The session's stored counter frequency is used for imported recordings. See [Microsoft: RAWMOUSE](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse), [Microsoft: QueryPerformanceCounter](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter), and the capture implementation in `src/InputEngine.cpp`.
+
+## Build and checks
+
+Open `RLA.slnx` in Visual Studio with the C++ desktop tools. Build **Release / x64**. The project uses vcpkg for ImGui, ImPlot, and nlohmann JSON.
+
+Run `./tests/run.ps1` in PowerShell for the regression checks. The tests cover session import/export, recording boundaries, scaling, timing, and ImGui/ImPlot frame generation. Real mouse timing and visible window interaction still require a hardware check.

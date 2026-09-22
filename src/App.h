@@ -36,11 +36,16 @@ public:
     AppState GetState() const { return state_; }
 
 private:
+    friend struct AppRegressionAccess;
+
     // UI rendering methods
     void RenderMainWindow();
     void RenderDevicePanel();
     void RenderControlPanel();
     void RenderPlotPanel();
+    void RenderScaleControls();
+    void ApplyAutoScaleB();
+    void RenderTimingPanel();
     void RenderStatusBar();
 
     // State transitions
@@ -54,6 +59,7 @@ private:
     void SaveSession();
     void LoadSession();
     void ExportCsv();
+    void RebuildPlotData();
 
     // Helper to get device display name
     std::string GetMouseDisplayName(const MouseDevice* device) const;
@@ -91,6 +97,14 @@ private:
     // Y-axis scaling for Mouse B
     bool enableYScaleB_ = false;
     float yScaleB_ = 1.0f;  // Multiplier for Mouse B velocity values
+    std::string autoScaleMessage_;
+
+    EventTiming timingA_, timingB_;
+    float rateWindowMs_ = 100.0f;
+    bool showInstantHz_ = false;
+    bool followTiming_ = true;
+    bool timingDirty_ = true;
+    double lastTimingUpdate_ = -1.0;
 
     // Time binning options (aggregates events into time windows)
     bool enableTimeBinning_ = false;
@@ -105,7 +119,7 @@ private:
     bool showDataPointMarkers_ = false;  // Disabled by default
     float markerSize_ = 3.0f;  // Size of the marker dots
 
-    // Plot mode: 0 = Velocity, 1 = Raw X/Y Deltas
+    // Plot mode: 0 = Movement magnitude, 1 = Raw X/Y Deltas, 2 = Event timing
     int plotMode_ = 0;
 
     // Time binning helper functions

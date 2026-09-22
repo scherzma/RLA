@@ -238,11 +238,18 @@ float InputEngine::GetBufferUtilization() const {
     return static_cast<float>(eventBuffer_.size()) / static_cast<float>(eventBuffer_.capacity());
 }
 
+void InputEngine::ResetEventRates() {
+    eventRateA_ = eventRateB_ = 0.0;
+    lastRateUpdateTime_ = 0;
+    lastEventCountA_ = lastEventCountB_ = 0;
+}
+
 void InputEngine::UpdateEventRates(size_t eventsA, size_t eventsB) {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
 
-    if (lastRateUpdateTime_ == 0) {
+    if (lastRateUpdateTime_ == 0 || eventsA < lastEventCountA_ || eventsB < lastEventCountB_) {
+        eventRateA_ = eventRateB_ = 0.0;
         lastRateUpdateTime_ = now.QuadPart;
         lastEventCountA_ = eventsA;
         lastEventCountB_ = eventsB;

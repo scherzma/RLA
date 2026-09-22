@@ -5,10 +5,49 @@
 #include <iomanip>
 #include <chrono>
 #include <ctime>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 
 namespace RLA {
 
 using json = nlohmann::json;
+
+// JSON numeric conversions do not check the target integer range.
+template<typename T>
+static T ReadInteger(const json& value) {
+    if (value.is_number_unsigned()) {
+        if (value.get<uint64_t>() <= static_cast<uint64_t>((std::numeric_limits<T>::max)())) {
+            return value.get<T>();
+        }
+    } else if (value.is_number_integer()) {
+        const auto number = value.get<int64_t>();
+        if (number >= (std::numeric_limits<T>::min)() && number <= (std::numeric_limits<T>::max)()) {
+            return static_cast<T>(number);
+        }
+    }
+    throw std::runtime_error("Expected an integer within the supported range");
+}
+
+static void ValidateSession(const RecordingSession& session) {
+    if (!std::isfinite(session.qpcFrequency) || session.qpcFrequency < 1.0 ||
+        session.qpcFrequency >= std::ldexp(1.0, 63) ||
+        std::floor(session.qpcFrequency) != session.qpcFrequency) {
+        throw std::runtime_error("Invalid QPC frequency");
+    }
+    if (session.startTimestamp < 0 || session.endTimestamp < session.startTimestamp) {
+        throw std::runtime_error("Invalid recording time range");
+    }
+    for (const auto* events : { &session.eventsA, &session.eventsB }) {
+        int64_t previous = session.startTimestamp;
+        for (const auto& event : *events) {
+            if (event.timestamp < previous || event.timestamp > session.endTimestamp) {
+                throw std::runtime_error("Events must be ordered and within the recording time range");
+            }
+            previous = event.timestamp;
+        }
+    }
+}
 
 // Helper to convert wide string to UTF-8
 static std::string WideToUtf8(const std::wstring& wide) {
@@ -40,7 +79,7 @@ static std::string GetIsoTimestamp() {
     auto time = std::chrono::system_clock::to_time_t(now);
 
     std::tm tm;
-    localtime_s(&tm, &time);
+    gmtime_s(&tm, &time);
 
     std::ostringstream oss;
     oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
@@ -52,7 +91,9 @@ bool DataStore::SaveToJson(const std::filesystem::path& path,
                            const AnalysisResult& result,
                            const std::wstring& mouseAName,
                            const std::wstring& mouseBName) {
+    lastError_.clear();
     try {
+        ValidateSession(session);
         json j;
 
         j["version"] = 1;
@@ -110,7 +151,9 @@ bool DataStore::SaveToJson(const std::filesystem::path& path,
             return false;
         }
 
+        file.exceptions(std::ios::failbit | std::ios::badbit);
         file << std::setw(2) << j;
+        file.close();
         return true;
     }
     catch (const std::exception& e) {
@@ -120,6 +163,7 @@ bool DataStore::SaveToJson(const std::filesystem::path& path,
 }
 
 std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::path& path) {
+    lastError_.clear();
     try {
         std::ifstream file(path);
         if (!file) {
@@ -129,39 +173,25 @@ std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::p
 
         json j = json::parse(file);
 
+        if (ReadInteger<int>(j.at("version")) != 1) {
+            throw std::runtime_error("Unsupported session version");
+        }
         RecordingSession session;
-
-        // Load session metadata
-        if (j.contains("session")) {
-            session.startTimestamp = j["session"]["startTimestamp"].get<int64_t>();
-            session.endTimestamp = j["session"]["endTimestamp"].get<int64_t>();
-            session.qpcFrequency = j["session"]["qpcFrequency"].get<double>();
-        }
-
-        // Load events A
-        if (j.contains("eventsA")) {
-            for (const auto& e : j["eventsA"]) {
-                MouseEvent event{};
-                event.deviceHandle = nullptr; // Handle not preserved
-                event.timestamp = e["t"].get<int64_t>();
-                event.deltaX = e["dx"].get<int32_t>();
-                event.deltaY = e["dy"].get<int32_t>();
-                session.eventsA.push_back(event);
+        const auto& metadata = j.at("session");
+        session.startTimestamp = ReadInteger<int64_t>(metadata.at("startTimestamp"));
+        session.endTimestamp = ReadInteger<int64_t>(metadata.at("endTimestamp"));
+        session.qpcFrequency = metadata.at("qpcFrequency").get<double>();
+        auto readEvents = [](const json& source, std::vector<MouseEvent>& events) {
+            if (!source.is_array()) throw std::runtime_error("Expected an event array");
+            events.reserve(source.size());
+            for (const auto& e : source) {
+                events.push_back({ nullptr, ReadInteger<int64_t>(e.at("t")),
+                    ReadInteger<int32_t>(e.at("dx")), ReadInteger<int32_t>(e.at("dy")) });
             }
-        }
-
-        // Load events B
-        if (j.contains("eventsB")) {
-            for (const auto& e : j["eventsB"]) {
-                MouseEvent event{};
-                event.deviceHandle = nullptr;
-                event.timestamp = e["t"].get<int64_t>();
-                event.deltaX = e["dx"].get<int32_t>();
-                event.deltaY = e["dy"].get<int32_t>();
-                session.eventsB.push_back(event);
-            }
-        }
-
+        };
+        readEvents(j.at("eventsA"), session.eventsA);
+        readEvents(j.at("eventsB"), session.eventsB);
+        ValidateSession(session);
         return session;
     }
     catch (const std::exception& e) {
@@ -172,13 +202,16 @@ std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::p
 
 bool DataStore::ExportToCsv(const std::filesystem::path& path,
                             const RecordingSession& session) {
+    lastError_.clear();
     try {
+        ValidateSession(session);
         std::ofstream file(path);
         if (!file) {
             lastError_ = "Failed to open file for writing: " + path.string();
             return false;
         }
 
+        file.exceptions(std::ios::failbit | std::ios::badbit);
         // Write header
         file << "timestamp_us,mouse,deltaX,deltaY,velocity\n";
 
@@ -188,7 +221,7 @@ bool DataStore::ExportToCsv(const std::filesystem::path& path,
         // Write Mouse A events
         for (const auto& e : session.eventsA) {
             double us = (e.timestamp - session.startTimestamp) * usPerTick;
-            double velocity = std::sqrt(static_cast<double>(e.deltaX * e.deltaX + e.deltaY * e.deltaY));
+            double velocity = std::hypot(static_cast<double>(e.deltaX), static_cast<double>(e.deltaY));
             file << std::fixed << std::setprecision(2)
                  << us << ",A,"
                  << e.deltaX << ","
@@ -199,7 +232,7 @@ bool DataStore::ExportToCsv(const std::filesystem::path& path,
         // Write Mouse B events
         for (const auto& e : session.eventsB) {
             double us = (e.timestamp - session.startTimestamp) * usPerTick;
-            double velocity = std::sqrt(static_cast<double>(e.deltaX * e.deltaX + e.deltaY * e.deltaY));
+            double velocity = std::hypot(static_cast<double>(e.deltaX), static_cast<double>(e.deltaY));
             file << std::fixed << std::setprecision(2)
                  << us << ",B,"
                  << e.deltaX << ","
@@ -207,6 +240,7 @@ bool DataStore::ExportToCsv(const std::filesystem::path& path,
                  << velocity << "\n";
         }
 
+        file.close();
         return true;
     }
     catch (const std::exception& e) {

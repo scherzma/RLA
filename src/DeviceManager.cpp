@@ -105,7 +105,8 @@ bool DeviceManager::ProcessEvent(const MouseEvent& event) {
     }
 
     // Accumulate movement
-    int64_t movement = static_cast<int64_t>(std::abs(event.deltaX)) + std::abs(event.deltaY);
+    int64_t movement = std::abs(static_cast<int64_t>(event.deltaX)) +
+                       std::abs(static_cast<int64_t>(event.deltaY));
     movementAccumulator_[event.deviceHandle] += movement;
 
     // Check if threshold reached
