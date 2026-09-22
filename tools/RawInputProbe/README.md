@@ -1,0 +1,21 @@
+# Independent Raw Input probe
+
+Build: `./tools/RawInputProbe/build.ps1`. Output: `x64/RawInputProbe/RawInputProbe.exe`.
+
+1. Close RLA and other mouse recorders.
+2. Open the probe. Click **Assign A**, wait half a second, then move only A. Repeat for B.
+3. Click **Start 18-second test**. Follow the instructions: prepare, move A, move both, move A.
+4. Keep the window in the foreground. Esc or focus loss stops the test early.
+
+Results save to `%LOCALAPPDATA%/RLA/RawInputProbe/`. The window shows the stage rates and file path. Keep moving throughout each stage. Incomplete tests are marked and should not be compared.
+
+This program independently reads each `WM_INPUT` report with `GetRawInputData`. It does not link RLA code, use buffered reads, draw graphs, or trace USB events. It uses foreground registration with `RIDEV_NOLEGACY` during capture, a confined cursor, and the normal thread priority. RLA uses a separate high-priority capture thread and combined standard/buffered reads. Thus this comparison tests several capture-path differences; it does not isolate a single cause.
+
+Counts are stored in fixed 10 ms bins. No files are written during capture. Stage rates use 4–7.5, 9–12.5, and 14–17.5 seconds, avoiding transitions. JSON includes total mouse reports, reports with nonzero relative movement, and reports with the `MOUSE_MOVE_NOCOALESCE` flag. Rates use movement reports, like RLA. Absolute input is counted separately and excluded. Times measure application receipt, not device polling. This test does not measure latency.
+
+The build checks bin boundaries, movement filtering, and rate calculation. Physical capture performance still needs the two-mouse test.
+
+References:
+- [Microsoft: standard Raw Input processing](https://learn.microsoft.com/en-us/windows/win32/inputdev/using-raw-input)
+- [Microsoft: RAWMOUSE fields](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse)
+- [MousePlotter Windows recorder](https://github.com/XBAB-Tech/MousePlotter/blob/main/windows_gui/log.c): uses standard reads and optional USB tracing, selecting one mouse. This probe is independently written and does not include MousePlotter code.
