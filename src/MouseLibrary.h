@@ -43,6 +43,9 @@ public:
     // One result per recording and method. A rerun replaces it instead of adding weight.
     bool AddComparison(const RecordingSession& session, const LatencyFit& fit, int method);
     void SetEnabled(size_t index, bool enabled);
+    void DeleteMouse(const std::string& id);
+    void DeleteSetup(const std::string& id);
+    void DeleteComparison(const std::string& key, int method);
     std::vector<MouseRank> Ranking(int method) const;
     bool Load(const std::filesystem::path& path, std::string& error);
     std::string Save(const std::filesystem::path& path) const; // Empty string means success.

@@ -70,7 +70,7 @@ struct CaptureDiagnostics {
 
 struct RecordingMouse {
     std::string mouseId, setupId, name, connection, label, devicePath;
-    int pollingHz = 0; // Estimated after recording or assigned by the user; zero means unspecified.
+    int pollingHz = 0; // Estimated from recorded movement; zero means unspecified.
 };
 
 struct RecordingSession {

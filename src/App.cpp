@@ -119,6 +119,7 @@ void App::Update() {
             }
         }
     }, stoppingRecording_ ? inputEngine_->GetBufferSize() : 8192);
+    if (state_ == AppState::Recording && !stoppingRecording_ && !currentSession_.captureTestMode) DetectLiveRates();
     if (state_ == AppState::Recording) currentSession_.capture = inputEngine_->GetCaptureDiagnostics();
     const HWND captureWindow=inputEngine_->ForegroundTestWindow() ? inputEngine_->ForegroundTestWindow() : hwnd_;
     if (state_ == AppState::Recording && (inputEngine_->IsRawCapture() || inputEngine_->ForegroundTestWindow()) && !stoppingRecording_ &&
@@ -333,7 +334,11 @@ void App::RenderControlPanel() {
         double rateB = inputEngine_->GetEventRateB();
 
         ImGui::SameLine();
-        ImGui::Text("| Rate: A=%.0f Hz  B=%.0f Hz", rateA, rateB);
+        ImGui::Text("| Events/s: A=%.0f B=%.0f", rateA, rateB);
+        ImGui::SameLine();
+        ImGui::Text("| Highest Hz: A=%s B=%s",
+            currentSession_.mouseA.pollingHz ? std::to_string(currentSession_.mouseA.pollingHz).c_str() : "detecting",
+            currentSession_.mouseB.pollingHz ? std::to_string(currentSession_.mouseB.pollingHz).c_str() : "detecting");
     }
 
     if (!canRecord && !isRecording) {
@@ -1234,7 +1239,7 @@ void App::StopRecording() {
         statusMessage_ += " Could not restore mouse controls. Press Esc to retry or Alt+F4 to close.";
     ReleaseRecordingCursor();
     stoppingRecording_ = false;
-    if (!currentSession_.captureTestMode) DetectSessionRates();
+    if (!currentSession_.captureTestMode) DetectSessionRates(true);
     if (currentSession_.captureTestMode>=2) RebuildPlotData();
     if (autosave_) {
         const auto* a = deviceManager_->GetMouseADevice();
@@ -1297,7 +1302,11 @@ void App::OnResize(int width, int height) {
 std::string App::GetMouseDisplayName(const MouseDevice* device) const {
     if (!device) return "Unknown";
     const auto saved=mouseLibrary_.BoundSetup(MouseLibrary::DeviceKey(device->path));
-    if (!saved.empty()) return mouseLibrary_.Label(saved);
+    if (const auto* setup=mouseLibrary_.FindSetup(saved)) {
+        const auto* mouse=mouseLibrary_.FindMouse(setup->mouseId);
+        return (mouse ? mouse->name : std::string("Unknown"))+" / "+setup->connection+
+            (setup->label.empty() ? "" : " / "+setup->label);
+    }
 
     // Convert wide string to narrow
     std::string name;

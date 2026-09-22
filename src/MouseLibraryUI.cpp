@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <format>
 #include <shellapi.h>
+#include <set>
+#include <tuple>
 
 namespace RLA {
 namespace {
@@ -54,21 +56,40 @@ void App::PollLibrarySave() {
 void App::CaptureMouseIdentity() {
     auto identity=[&](const MouseDevice* device) {
         const auto path=device ? MouseLibrary::DeviceKey(device->path) : "";
-        return mouseLibrary_.Identity(mouseLibrary_.BoundSetup(path),path);
+        auto mouse=mouseLibrary_.Identity(mouseLibrary_.BoundSetup(path),path);
+        mouse.pollingHz=0; // A previous recording is not evidence for this recording.
+        return mouse;
     };
+    lastRateDetection_=0;
     currentSession_.mouseA=identity(deviceManager_->GetMouseADevice());
     currentSession_.mouseB=identity(deviceManager_->GetMouseBDevice());
 }
-void App::DetectSessionRates() {
-    if (libraryReadOnly_) return;
+void App::DetectLiveRates() {
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    const double frequency=currentSession_.qpcFrequency;
+    if (frequency<=0 || now.QuadPart-lastRateDetection_<frequency) return;
+    lastRateDetection_=now.QuadPart;
+    auto detect=[&](RecordingMouse& mouse,const std::vector<MouseEvent>& events) {
+        const auto cutoff=now.QuadPart-static_cast<int64_t>(frequency*2);
+        auto begin=std::lower_bound(events.begin(),events.end(),cutoff,
+            [](const MouseEvent& event,int64_t time) { return event.timestamp<time; });
+        // Bounded work, once per second. Never create library entries during capture.
+        if (events.end()-begin>64000) begin=events.end()-64000;
+        mouse.pollingHz=(std::max)(mouse.pollingHz,MouseLibrary::DetectRate(std::vector<MouseEvent>(begin,events.end()),frequency));
+    };
+    detect(currentSession_.mouseA,currentSession_.eventsA);
+    detect(currentSession_.mouseB,currentSession_.eventsB);
+}
+void App::DetectSessionRates(bool bindDevices) {
     auto detect=[&](RecordingMouse& mouse,const std::vector<MouseEvent>& events) {
         const auto* known=mouseLibrary_.FindSetup(mouse.setupId);
-        if (!known || events.empty()) return;
-        const auto setup=*known;
         const int hz=MouseLibrary::DetectRate(events,currentSession_.qpcFrequency);
+        mouse.pollingHz=hz;
+        if (!known || libraryReadOnly_) return;
+        const auto setup=*known;
         const auto id=mouseLibrary_.AddSetup(setup.mouseId,setup.connection,hz,setup.label);
         mouse=mouseLibrary_.Identity(id,mouse.devicePath);
-        if (!mouse.devicePath.empty()) mouseLibrary_.Bind(mouse.devicePath,id);
+        if (bindDevices && !mouse.devicePath.empty()) mouseLibrary_.Bind(mouse.devicePath,id);
         LibraryChanged();
     };
     try { detect(currentSession_.mouseA,currentSession_.eventsA); detect(currentSession_.mouseB,currentSession_.eventsB); }
@@ -78,22 +99,35 @@ void App::SaveComparison() {
     if (currentSession_.captureTestMode) { comparisonMessage_="Capture tests are diagnostic recordings and are not added to rankings."; return; }
     if (libraryReadOnly_ || libraryPath_.empty()) { comparisonMessage_="Mouse library is unavailable."; return; }
     try {
+        DetectSessionRates();
         if (!mouseLibrary_.AddComparison(currentSession_,latencyFit_,resultMethod_)) {
-            comparisonMessage_="Choose two different saved setups with known Hz, then obtain a valid latency result."; return;
+            comparisonMessage_="Link both mice and record steady movement to detect Hz. A valid latency result is also required."; return;
         }
         runsToKeep_.push_back(currentSession_);
         LibraryChanged();
         comparisonMessage_="Comparison added. Repeating this analysis updates the same run.";
     } catch (const std::exception& e) { comparisonMessage_=e.what(); }
 }
-bool App::SetupCombo(const char* label,std::string& selection) {
+bool App::SetupCombo(const char* label,std::string& selection,bool identityOnly) {
+    auto display=[&](const std::string& id) {
+        if (!identityOnly) return mouseLibrary_.Label(id);
+        const auto* setup=mouseLibrary_.FindSetup(id);
+        if (!setup) return std::string("Not linked");
+        const auto* mouse=mouseLibrary_.FindMouse(setup->mouseId);
+        return (mouse ? mouse->name : std::string("Unknown"))+" / "+setup->connection+(setup->label.empty() ? "" : " / "+setup->label);
+    };
     bool changed=false;
     ImGui::SetNextItemWidth((std::min)(420.0f, ImGui::GetContentRegionAvail().x * 0.65f));
-    if (ImGui::BeginCombo(label,mouseLibrary_.Label(selection).c_str())) {
+    if (ImGui::BeginCombo(label,display(selection).c_str())) {
         if (ImGui::Selectable("Not linked",selection.empty())) { selection.clear(); changed=true; }
+        std::set<std::tuple<std::string,std::string,std::string>> identities;
         for (const auto& setup : mouseLibrary_.Setups()) {
+            if (identityOnly && !identities.emplace(setup.mouseId,setup.connection,setup.label).second) continue;
             ImGui::PushID(setup.id.c_str());
-            if (ImGui::Selectable(mouseLibrary_.Label(setup.id).c_str(),selection==setup.id)) { selection=setup.id; changed=true; }
+            const auto* selected=mouseLibrary_.FindSetup(selection);
+            const bool isSelected=selection==setup.id || (identityOnly && selected &&
+                selected->mouseId==setup.mouseId && selected->connection==setup.connection && selected->label==setup.label);
+            if (ImGui::Selectable(display(setup.id).c_str(),isSelected)) { selection=setup.id; changed=true; }
             ImGui::PopID();
         }
         ImGui::EndCombo();
@@ -106,11 +140,11 @@ void App::RenderDeviceBinding(const char* label,const MouseDevice* device) {
     const auto key=device ? MouseLibrary::DeviceKey(device->path) : "";
     auto selected=mouseLibrary_.BoundSetup(key);
     ImGui::BeginDisabled(key.empty() || state_==AppState::Recording || libraryReadOnly_);
-    if (SetupCombo("Saved setup",selected)) {
+    if (SetupCombo("Mouse and connection",selected,true)) {
         try { mouseLibrary_.Bind(key,selected); LibraryChanged(); } catch (const std::exception& e) { libraryMessage_=e.what(); }
     }
     if (ImGui::Button("New mouse or connection...")) {
-        editMouse_.clear(); mouseName_[0]='\0'; setupLabel_[0]='\0'; setupRate_=0;
+        editMouse_.clear(); mouseName_[0]='\0'; setupLabel_[0]='\0';
         ImGui::OpenPopup("Link this device");
     }
     if (ImGui::BeginPopup("Link this device")) {
@@ -129,18 +163,17 @@ void App::RenderDeviceBinding(const char* label,const MouseDevice* device) {
         if (editMouse_.empty()) { ImGui::SetNextItemWidth(300); ImGui::InputText("Name",mouseName_,sizeof(mouseName_)); }
         const char* connections[]={"Wired","Wireless","Bluetooth","Other"};
         ImGui::SetNextItemWidth(180); ImGui::Combo("Connection",&connectionIndex_,connections,4);
-        ImGui::TextUnformatted("Polling rate: detect after recording");
+        ImGui::TextUnformatted("Polling rate: detected automatically during recording");
         if (ImGui::TreeNode("Optional settings")) {
-            ImGui::SetNextItemWidth(180); ImGui::InputInt("Known Hz (0 = detect)",&setupRate_,0,0);
             ImGui::SetNextItemWidth(300); ImGui::InputText("Notes",setupLabel_,sizeof(setupLabel_));
             ImGui::TreePop();
         }
         ImGui::TextUnformatted("For another connection, select the same mouse name above.");
-        ImGui::BeginDisabled((editMouse_.empty() && mouseName_[0]=='\0') || setupRate_<0 || setupRate_>32000);
+        ImGui::BeginDisabled((editMouse_.empty() && mouseName_[0]=='\0'));
         if (ImGui::Button("Save and link device")) {
             try {
                 if (editMouse_.empty()) editMouse_=mouseLibrary_.AddMouse(mouseName_);
-                const auto setup=mouseLibrary_.AddSetup(editMouse_,connections[connectionIndex_],setupRate_,setupLabel_);
+                const auto setup=mouseLibrary_.AddSetup(editMouse_,connections[connectionIndex_],0,setupLabel_);
                 mouseLibrary_.Bind(key,setup); LibraryChanged(); ImGui::CloseCurrentPopup();
             } catch (const std::exception& e) { libraryMessage_=e.what(); }
         }
@@ -159,8 +192,38 @@ void App::OpenRankedRun(const std::string& key) {
     showLibrary_=false; statusMessage_="Saved comparison loaded.";
 }
 
+void App::RenderLibraryDelete() {
+    if (deleteKind_.empty()) return;
+    ImGui::OpenPopup("Delete from library?");
+    if (ImGui::BeginPopupModal("Delete from library?",nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushTextWrapPos(600);
+        ImGui::TextWrapped("Delete %s: %s?",deleteKind_.c_str(),deleteLabel_.c_str());
+        if (deleteKind_=="mouse") ImGui::TextWrapped("This removes all setups, device links, and ranking results for this mouse.");
+        else if (deleteKind_=="setup") ImGui::TextWrapped("This also removes its device links and related ranking results.");
+        ImGui::TextUnformatted("Recording files and autosaves are kept.");
+        ImGui::PopTextWrapPos();
+        ImGui::BeginDisabled(libraryReadOnly_ || state_==AppState::Recording || latencyTask_.valid());
+        if (ImGui::Button("Delete")) {
+            if (deleteKind_=="mouse") mouseLibrary_.DeleteMouse(deleteId_);
+            else if (deleteKind_=="setup") mouseLibrary_.DeleteSetup(deleteId_);
+            else mouseLibrary_.DeleteComparison(deleteId_,deleteMethod_);
+            for (auto* mouse : {&currentSession_.mouseA,&currentSession_.mouseB}) {
+                if (!mouse->setupId.empty() && !mouseLibrary_.FindSetup(mouse->setupId)) {
+                    mouse->setupId.clear(); mouse->mouseId.clear();
+                }
+            }
+            autoRankPending_=false;
+            LibraryChanged(); deleteKind_.clear(); ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled(); ImGui::SameLine();
+        if (ImGui::Button("Cancel")) { deleteKind_.clear(); ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
 void App::RenderMouseLibrary() {
-    if (libraryPage_==0) ImGui::TextWrapped("Save one name per mouse. Add wired or wireless setups under that name. Polling rate is detected after recording.");
+    RenderLibraryDelete();
+    if (libraryPage_==0) ImGui::TextWrapped("Save one name per mouse. Add wired or wireless setups under that name. Polling rate is detected automatically during recording.");
     if (libraryMessage_!="Mouse library saved." && libraryMessage_!="Saving mouse library...") ImGui::TextWrapped("%s",libraryMessage_.c_str());
     if (librarySaveFailed_ && ImGui::Button("Retry saving")) librarySaveFailed_=false;
     ImGui::BeginDisabled(libraryReadOnly_);
@@ -192,12 +255,12 @@ void App::RenderMouseLibrary() {
             ImGui::EndDisabled(); ImGui::EndDisabled();
             const char* connections[]={"Wired","Wireless","Bluetooth","Other"};
             ImGui::SetNextItemWidth(130); ImGui::Combo("Connection",&connectionIndex_,connections,4);
-            ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::InputInt("Hz (0 = auto)",&setupRate_,0,0);
+            ImGui::TextDisabled("Hz is detected from movement during recording.");
             ImGui::SetNextItemWidth(420); ImGui::InputText("Setup notes",setupLabel_,sizeof(setupLabel_));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("For example: performance mode, firmware, or receiver placement.\nUse a separate setup label when you want to compare these settings.");
-            ImGui::BeginDisabled(!mouseLibrary_.FindMouse(editMouse_) || setupRate_<0 || setupRate_>32000);
+            ImGui::BeginDisabled(!mouseLibrary_.FindMouse(editMouse_));
             if (ImGui::Button("Add setup to selected mouse")) {
-                edit([&] { editSetup_=mouseLibrary_.AddSetup(editMouse_,connections[connectionIndex_],setupRate_,setupLabel_); setupParent_=editMouse_; });
+                edit([&] { editSetup_=mouseLibrary_.AddSetup(editMouse_,connections[connectionIndex_],0,setupLabel_); setupParent_=editMouse_; });
             }
             ImGui::EndDisabled();
             if (ImGui::TreeNode("Move an existing setup to another mouse")) {
@@ -222,6 +285,25 @@ void App::RenderMouseLibrary() {
             }
         }
     }
+    ImGui::SeparatorText("Saved mice and setups");
+    ImGui::BeginDisabled(state_==AppState::Recording);
+    for (const auto& mouse : mouseLibrary_.Mice()) {
+        ImGui::PushID(mouse.id.c_str());
+        const bool expanded=ImGui::TreeNodeEx("Setups",ImGuiTreeNodeFlags_DefaultOpen,"%s",mouse.name.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Delete mouse")) { deleteKind_="mouse"; deleteId_=mouse.id; deleteLabel_=mouse.name; }
+        if (expanded) {
+            for (const auto& setup : mouseLibrary_.Setups()) if (setup.mouseId==mouse.id) {
+                ImGui::PushID(setup.id.c_str());
+                ImGui::TextUnformatted(mouseLibrary_.Label(setup.id).c_str()); ImGui::SameLine();
+                if (ImGui::SmallButton("Delete setup")) { deleteKind_="setup"; deleteId_=setup.id; deleteLabel_=mouseLibrary_.Label(setup.id); }
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndDisabled();
     ImGui::SeparatorText("After recording");
     if (ImGui::Checkbox("Analyze and add valid results to rankings automatically",&mouseLibrary_.autoRank)) LibraryChanged();
     ImGui::TextWrapped("Move both mice together through several smooth back-and-forth cycles. Click or press Esc to stop raw capture. Each completed recording is saved automatically.");
@@ -239,8 +321,9 @@ void App::RenderMouseLibrary() {
     if ((!currentSession_.eventsA.empty() || !currentSession_.eventsB.empty()) && ImGui::CollapsingHeader("Check recording labels and save result",ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::BeginDisabled(state_==AppState::Recording);
         auto a=currentSession_.mouseA.setupId,b=currentSession_.mouseB.setupId;
-        if (SetupCombo("Recorded A",a)) currentSession_.mouseA=mouseLibrary_.Identity(a,currentSession_.mouseA.devicePath);
-        if (SetupCombo("Recorded B",b)) currentSession_.mouseB=mouseLibrary_.Identity(b,currentSession_.mouseB.devicePath);
+        if (SetupCombo("Recorded A",a,true)) { currentSession_.mouseA=mouseLibrary_.Identity(a,currentSession_.mouseA.devicePath); DetectSessionRates(); }
+        if (SetupCombo("Recorded B",b,true)) { currentSession_.mouseB=mouseLibrary_.Identity(b,currentSession_.mouseB.devicePath); DetectSessionRates(); }
+        ImGui::Text("Highest detected Hz: A %s | B %s", currentSession_.mouseA.pollingHz ? std::to_string(currentSession_.mouseA.pollingHz).c_str() : "unknown", currentSession_.mouseB.pollingHz ? std::to_string(currentSession_.mouseB.pollingHz).c_str() : "unknown");
         ImGui::TextDisabled("These labels belong to this recording, not to the currently connected mice.");
         ImGui::BeginDisabled(!latencyFit_.valid);
         if (ImGui::Button("Save result to rankings")) SaveComparison();
@@ -264,6 +347,8 @@ void App::RenderMouseLibrary() {
         ImGui::TableSetupColumn("Group mismatch ms",ImGuiTableColumnFlags_WidthFixed,150);
         ImGui::TableHeadersRow();
         for (const auto& row : ranking_) {
+            const auto* setup=mouseLibrary_.FindSetup(row.setupId);
+            if (!setup || !setup->pollingHz) continue;
             ImGui::TableNextRow(); ImGui::TableNextColumn();
             if (row.group) ImGui::Text("%d / %d",row.group,row.place); else ImGui::TextUnformatted("Unranked");
             ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(row.setupId).c_str());
@@ -289,11 +374,11 @@ void App::RenderMouseLibrary() {
             if (!inserted && (run.spreadMs<previous.spreadMs || (run.spreadMs==previous.spreadMs && run.cycles>previous.cycles))) entry->second=i;
         }
         std::string openKey;
-        if (ImGui::BeginTable("Comparison history",7,ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY,ImVec2(0,230))) {
+        if (ImGui::BeginTable("Comparison history",8,ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY,ImVec2(0,230))) {
             ImGui::TableSetupColumn("Use",ImGuiTableColumnFlags_WidthFixed,35);
             ImGui::TableSetupColumn("Reference A",ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("Test B",ImGuiTableColumnFlags_WidthStretch);
-            for (const char* name : {"B-A ms","Spread ms","Cycles","Run"}) ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
+            for (const char* name : {"B-A ms","Spread ms","Cycles","Run","Remove"}) ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
             ImGui::TableSetupScrollFreeze(0,1); ImGui::TableHeadersRow();
             for (size_t i=0;i<runs.size();++i) {
                 const auto& run=runs[i]; if (run.method!=rankMethod_) continue;
@@ -311,6 +396,12 @@ void App::RenderMouseLibrary() {
                 ImGui::TableNextColumn(); ImGui::BeginDisabled(state_==AppState::Recording);
                 if (ImGui::SmallButton(best ? "Open best" : "Open")) openKey=run.recordingKey;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",run.savedAt.c_str());
+                ImGui::EndDisabled();
+                ImGui::TableNextColumn(); ImGui::BeginDisabled(libraryReadOnly_ || state_==AppState::Recording);
+                if (ImGui::SmallButton("Delete")) {
+                    deleteKind_="result"; deleteId_=run.recordingKey; deleteMethod_=run.method;
+                    deleteLabel_=mouseLibrary_.Label(run.setupA)+" vs "+mouseLibrary_.Label(run.setupB)+" ("+run.savedAt+")";
+                }
                 ImGui::EndDisabled(); ImGui::PopID();
             }
             ImGui::EndTable();

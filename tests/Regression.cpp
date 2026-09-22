@@ -409,9 +409,36 @@ struct AppRegressionAccess {
         const auto a=app.mouseLibrary_.AddMouse("Reference"), b=app.mouseLibrary_.AddMouse("Test");
         const auto sa=app.mouseLibrary_.AddSetup(a,"Wired",0,"Default"), sb=app.mouseLibrary_.AddSetup(b,"Wireless",0,"Performance mode");
         session.mouseA=app.mouseLibrary_.Identity(sa,"reference-interface"); session.mouseB=app.mouseLibrary_.Identity(sb,"test-interface");
+        // Use real QPC coordinates to exercise bounded detection while recording.
+        auto live=session; LARGE_INTEGER now, frequency; QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&now);
+        const auto last=(std::max)(live.eventsA.back().timestamp,live.eventsB.back().timestamp);
+        for (auto* events : {&live.eventsA,&live.eventsB}) for (auto& event : *events)
+            event.timestamp=now.QuadPart+static_cast<int64_t>((event.timestamp-last)*frequency.QuadPart/live.qpcFrequency);
+        live.qpcFrequency=static_cast<double>(frequency.QuadPart);
+        app.currentSession_=live;
+        const auto setupsBefore=app.mouseLibrary_.Setups().size();
+        app.DetectLiveRates();
+        Check(app.currentSession_.mouseA.pollingHz==8000 && app.currentSession_.mouseB.pollingHz==4000,
+              "Live recording must detect each mouse rate independently");
+        Check(app.mouseLibrary_.Setups().size()==setupsBefore,"Live detection must not create library entries");
+        app.currentSession_.eventsA.clear(); app.currentSession_.eventsB.clear(); app.lastRateDetection_=0;
+        app.DetectLiveRates();
+        Check(app.currentSession_.mouseA.pollingHz==8000 && app.currentSession_.mouseB.pollingHz==4000,
+              "Pauses must retain the highest rate detected in this recording");
+        app.CaptureMouseIdentity();
+        Check(app.currentSession_.mouseA.pollingHz==0 && app.currentSession_.mouseB.pollingHz==0,
+              "A new recording must reset the previous rate");
         app.currentSession_=session; app.RebuildPlotData(); app.DetectSessionRates();
         Check(app.currentSession_.mouseA.pollingHz==8000 && app.currentSession_.mouseB.pollingHz==4000,
               "Recording completion must split detected rates into separate setups");
+        const auto detectedA=app.currentSession_.mouseA.setupId;
+        app.currentSession_.mouseA=app.mouseLibrary_.Identity(app.currentSession_.mouseB.setupId,"reference-interface");
+        app.DetectSessionRates();
+        Check(app.currentSession_.mouseA.pollingHz==8000,
+              "Choosing a saved identity must not override this recording's measured Hz");
+        Check(app.mouseLibrary_.BoundSetup("reference-interface").empty(),
+              "Relabeling an old recording must not change live device bindings");
+        app.currentSession_.mouseA=app.mouseLibrary_.Identity(detectedA,"reference-interface");
         app.StartLatencyAnalysis();
         Check(app.latencyTask_.wait_for(std::chrono::seconds(5))==std::future_status::ready,"Library analysis must finish");
         app.PollLatencyAnalysis();
@@ -445,6 +472,10 @@ struct AppRegressionAccess {
             app.RenderMouseLibrary(); ImGui::End(); ImGui::Render();
             Check(ImGui::GetDrawData()->TotalVtxCount>0,"Mouse library page must render without a GPU");
         }
+        app.deleteKind_="mouse"; app.deleteId_=a; app.deleteLabel_="Reference";
+        ImGui::NewFrame(); ImGui::Begin("Delete UI"); app.RenderLibraryDelete(); ImGui::End(); ImGui::Render();
+        Check(app.mouseLibrary_.FindMouse(a)!=nullptr,"Opening delete confirmation must not delete data");
+        app.deleteKind_.clear();
         MouseDevice previewDevice{}; previewDevice.path=L"test-interface"; previewDevice.name=L"Test device";
         for (int frame=0;frame<2;++frame) {
             ImGui::NewFrame(); ImGui::SetNextWindowSize(ImVec2(1280,1000)); ImGui::Begin("Link UI");
@@ -1069,11 +1100,20 @@ static void RunMouseLibraryChecks() {
           "Relative ranking must solve consistent comparison paths and resist a pair outlier");
     Check(row(sa).group==row(sc).group && row(wiredB).group!=row(sa).group && std::abs(row(slowerB).relativeMs)<1e-8,
           "Disconnected comparison groups must never receive a shared rank");
-    for (int rate : {125,500,1000,2000,4000,8000}) {
+    for (int rate : {125,250,500,1000,2000,4000,8000}) {
         const auto recording=LatencySession(0,rate,rate);
         std::cout << "Rate expected=" << rate << " detected=" << MouseLibrary::DetectRate(recording.eventsA,recording.qpcFrequency) << '\n';
         Check(MouseLibrary::DetectRate(recording.eventsA,recording.qpcFrequency)==rate,"Steady movement must detect the nominal rate");
     }
+    auto mixed=LatencySession(0,1000,1000);
+    auto fast=LatencySession(0,8000,8000);
+    const auto offset=mixed.eventsA.back().timestamp-fast.eventsA.front().timestamp+125;
+    for (auto event : fast.eventsA) { event.timestamp+=offset; mixed.eventsA.push_back(event); }
+    auto slow=LatencySession(0,125,125);
+    const auto slowOffset=mixed.eventsA.back().timestamp-slow.eventsA.front().timestamp+1000000;
+    for (auto event : slow.eventsA) { event.timestamp+=slowOffset; mixed.eventsA.push_back(event); }
+    Check(MouseLibrary::DetectRate(mixed.eventsA,mixed.qpcFrequency)==8000,
+          "Rate detection must use the highest sustained standard rate despite slow movement and pauses");
     auto grouped=LatencySession();
     for (size_t i=0;i<grouped.eventsA.size();++i) grouped.eventsA[i].timestamp=grouped.startTimestamp+static_cast<int64_t>(i/100)*15000;
     Check(MouseLibrary::DetectRate(grouped.eventsA,grouped.qpcFrequency)==0,"Batched arrivals must not receive a confident Hz label");
@@ -1087,6 +1127,25 @@ static void RunMouseLibraryChecks() {
     MouseLibrary restored; std::string error;
     Check(restored.Load(path,error) && restored.Comparisons().size()==library.Comparisons().size() && restored.BoundSetup("hid-b")==sb,
           "Profiles, links, and comparisons must survive restart");
+    auto deleted=library;
+    const auto first=deleted.Comparisons().front();
+    const auto runCount=deleted.Comparisons().size();
+    deleted.DeleteComparison(first.recordingKey,first.method);
+    Check(deleted.Comparisons().size()==runCount-1 && deleted.FindSetup(sa),"Deleting a result must keep mouse setups");
+    deleted.DeleteSetup(sb);
+    Check(!deleted.FindSetup(sb) && deleted.FindMouse(b) && deleted.BoundSetup("hid-b").empty(),
+          "Deleting a setup must clear its device links but keep its mouse");
+    for (const auto& item : deleted.Comparisons()) Check(item.setupA!=sb && item.setupB!=sb,"Deleted setups must leave no dangling ranking results");
+    deleted.DeleteMouse(a);
+    Check(!deleted.FindMouse(a) && !deleted.FindSetup(sa) && !deleted.FindSetup(wiredB) && deleted.FindSetup(sc),
+          "Deleting a mouse must remove its setups and preserve other mice");
+    Check(deleted.BoundSetup("hid-a").empty(),"Deleting a mouse must remove device links");
+    const auto deletedPath=directory/L"deleted.json";
+    Check(deleted.Save(deletedPath).empty(),"Deleted library must save");
+    MouseLibrary deletedReloaded;
+    Check(deletedReloaded.Load(deletedPath,error) && !deletedReloaded.FindMouse(a) && !deletedReloaded.FindSetup(sb),
+          "Deletion must survive restart without invalid references");
+    std::filesystem::remove(deletedPath);
     nlohmann::json document; {std::ifstream input(path); input>>document;}
     document["comparisons"][0]["setupA"]="missing";
     {std::ofstream output(path); output<<document;}

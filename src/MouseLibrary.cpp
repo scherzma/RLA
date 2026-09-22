@@ -164,35 +164,58 @@ bool MouseLibrary::AddComparison(const RecordingSession& session, const LatencyF
 }
 int MouseLibrary::DetectRate(const std::vector<MouseEvent>& events, double frequency) {
     if (events.size()<100 || !std::isfinite(frequency) || frequency<=0) return 0;
-    const size_t substantial=std::count_if(events.begin(),events.end(),[](const MouseEvent& e) {
-        return std::abs(static_cast<int64_t>(e.deltaX))>=2 || std::abs(static_cast<int64_t>(e.deltaY))>=2;
-    });
-    if (substantial<events.size()/4) return 0; // Sparse one-count movement can hide reports with zero movement.
-    std::vector<double> intervals;
+    // Find the highest supported rate in a sustained section. Pauses and slow
+    // movement elsewhere must not pull the recording's detected rate down.
+    int highest=0;
+    size_t first=0;
+    auto section=[&](size_t last) {
+        if (last<=first) return;
+        const double duration=(events[last].timestamp-events[first].timestamp)*1000.0/frequency;
+        if (duration<100) return;
+        size_t substantial=0;
+        std::vector<double> intervals;
+        intervals.reserve(last-first);
+        for (size_t i=first+1;i<=last;++i) {
+            const auto& event=events[i];
+            if (std::abs(static_cast<int64_t>(event.deltaX))>=2 || std::abs(static_cast<int64_t>(event.deltaY))>=2) ++substantial;
+            const double dt=(event.timestamp-events[i-1].timestamp)*1000.0/frequency;
+            if (dt>0) intervals.push_back(dt);
+        }
+        const size_t count=last-first;
+        if (substantial<count/4 || intervals.size()<count*0.85) return;
+        const double rate=count*1000.0/duration;
+        const double intervalRate=1000.0/Median(intervals);
+        for (int candidate : {125,250,500,1000,2000,4000,8000}) {
+            if (candidate>highest && std::abs(rate/candidate-1)<0.12 && std::abs(intervalRate/candidate-1)<0.2)
+                highest=candidate;
+        }
+    };
     for (size_t i=1;i<events.size();++i) {
-        const double dt=(events[i].timestamp-events[i-1].timestamp)*1000.0/frequency;
-        if (dt<0) return 0;
-        if (dt>0) intervals.push_back(dt);
+        if (events[i].timestamp<events[i-1].timestamp) return 0;
+        if ((events[i].timestamp-events[first].timestamp)*1000.0/frequency>=250) {
+            section(i); first=i;
+        }
     }
-    // Grouped arrivals do not provide enough evidence for a hardware-rate label.
-    if (intervals.size()<events.size()*0.85) return 0;
-    const double typical=Median(intervals), intervalRate=1000.0/typical;
-    const double duration=(events.back().timestamp-events.front().timestamp)*1000.0/frequency;
-    if (duration<100) return 0;
-    const double window=(std::max)(50.0,16*typical);
-    if (duration<2*window) return 0;
-    const auto timing=Analyzer::BuildEventTiming(events,events.front().timestamp,frequency,duration,window);
-    auto rates=timing.ratesHz;
-    if (rates.empty()) return 0;
-    auto high=rates.begin()+static_cast<size_t>((rates.size()-1)*0.9);
-    std::nth_element(rates.begin(),high,rates.end());
-    int best=0; double error=1;
-    for (int candidate : {125,250,500,1000,2000,4000,8000,16000,32000}) {
-        const double e=std::abs(*high/candidate-1);
-        if (e<0.12 && e<error && std::abs(intervalRate/candidate-1)<0.2) { best=candidate; error=e; }
-    }
-    return best;
+    section(events.size()-1);
+    return highest;
 }
+
+void MouseLibrary::DeleteComparison(const std::string& key, int method) {
+    std::erase_if(comparisons_, [&](const auto& run) { return run.recordingKey==key && run.method==method; });
+}
+void MouseLibrary::DeleteSetup(const std::string& id) {
+    // Remove dependent results and device links before removing their setup.
+    std::erase_if(comparisons_, [&](const auto& run) { return run.setupA==id || run.setupB==id; });
+    std::erase_if(bindings_, [&](const auto& binding) { return binding.second==id; });
+    std::erase_if(setups_, [&](const auto& setup) { return setup.id==id; });
+}
+void MouseLibrary::DeleteMouse(const std::string& id) {
+    std::vector<std::string> children;
+    for (const auto& setup : setups_) if (setup.mouseId==id) children.push_back(setup.id);
+    for (const auto& child : children) DeleteSetup(child);
+    std::erase_if(mice_, [&](const auto& mouse) { return mouse.id==id; });
+}
+
 void MouseLibrary::SetEnabled(size_t index, bool enabled) {
     if (index >= comparisons_.size()) throw std::runtime_error("Comparison not found.");
     comparisons_[index].enabled = enabled;

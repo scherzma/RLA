@@ -59,13 +59,15 @@ private:
     void ResetLatencyAnalysis();
     void RenderAutosaveControls();
     void RenderMouseLibrary();
-    bool SetupCombo(const char* label, std::string& selection);
+    bool SetupCombo(const char* label, std::string& selection, bool identityOnly = false);
+    void RenderLibraryDelete();
+    void DetectLiveRates();
     void RenderDeviceBinding(const char* label, const MouseDevice* device);
     void LibraryChanged();
     void PollLibrarySave();
     void SaveComparison();
     void CaptureMouseIdentity();
-    void DetectSessionRates();
+    void DetectSessionRates(bool bindDevices = false);
     void OpenRankedRun(const std::string& key);
     void RenderTimingPanel();
     void RenderStatusBar();
@@ -108,7 +110,10 @@ private:
     int rankMethod_ = 2, resultMethod_ = 2;
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
-    int connectionIndex_ = 1, setupRate_ = 0;
+    int connectionIndex_ = 1;
+    int64_t lastRateDetection_ = 0;
+    std::string deleteKind_, deleteId_, deleteLabel_;
+    int deleteMethod_ = 0;
     bool showLibrary_ = false;
     int libraryPage_ = 0; // 0: device setup, 1: rankings
     bool showAllLatencyMarkers_ = false;
