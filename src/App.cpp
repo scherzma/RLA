@@ -362,6 +362,16 @@ void App::RenderControlPanel() {
     }
 
     RenderCaptureTest();
+    if (state_ != AppState::Recording && (!currentSession_.eventsA.empty() || !currentSession_.eventsB.empty())) {
+        const auto recordedRate=[](const RecordingMouse& mouse, bool hasEvents) {
+            if (!hasEvents) return std::string("--");
+            return mouse.pollingHz > 0 ? std::to_string(mouse.pollingHz) + " Hz" : std::string("Unknown");
+        };
+        ImGui::Text("Recorded rate: A %s | B %s",
+            recordedRate(currentSession_.mouseA, !currentSession_.eventsA.empty()).c_str(),
+            recordedRate(currentSession_.mouseB, !currentSession_.eventsB.empty()).c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rates stored with this recording, not the currently connected mice.");
+    }
 }
 
 void App::RenderCaptureTest() {
@@ -1187,6 +1197,8 @@ void App::StartRecording() {
         return;
     }
     deviceManager_->CancelAssignment();
+    showLibrary_ = false;
+    showPlotWindow_ = true;
     currentSession_ = RecordingSession{};
     autoRankPending_=false;
     CaptureMouseIdentity();
