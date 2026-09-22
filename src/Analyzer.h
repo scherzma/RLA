@@ -65,6 +65,9 @@ public:
         int64_t startTimestamp, double frequency, double binMs, bool timeWeighted);
     static EventTiming BuildEventTiming(const std::vector<MouseEvent>& events,
         int64_t startTimestamp, double frequency, double endMs, double windowMs, double longGapMs = 20.0);
+    // Events must be sorted by timestamp. Counts movement reports in (beginMs,endMs].
+    static double EventRateInRange(const std::vector<MouseEvent>& events, int64_t startTimestamp,
+        double frequency, double beginMs, double endMs);
 
     // Configuration
     void SetAccelerationThreshold(double threshold) { accelerationThreshold_ = threshold; }

@@ -34,6 +34,7 @@ static T ReadInteger(const json& value) {
 }
 
 static void ValidateSession(const RecordingSession& session) {
+    if (session.captureTestMode<0 || session.captureTestMode>2) throw std::runtime_error("Invalid capture test mode");
     if (!std::isfinite(session.qpcFrequency) || session.qpcFrequency < 1.0 ||
         session.qpcFrequency >= std::ldexp(1.0, 63) ||
         std::floor(session.qpcFrequency) != session.qpcFrequency) {
@@ -142,6 +143,11 @@ bool DataStore::SaveToJson(const std::filesystem::path& path,
                 {"legacySuppressed", c.legacySuppressed}};
         }
 
+        if (session.captureTestMode) {
+            j["captureTest"] = {{"version",1},{"mode",session.captureTestMode},
+                {"cursorConfined",session.testCursorConfined},{"startDrops",session.testStartDrops},
+                {"startErrors",session.testStartErrors}};
+        }
         // Store events
         json eventsA = json::array();
         for (const auto& e : session.eventsA) {
@@ -221,6 +227,15 @@ std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::p
                 ReadInteger<uint64_t>(c.at("groupedPackets")), ReadInteger<uint64_t>(c.at("maxBatch")),
                 ReadInteger<uint64_t>(c.at("readErrors")), ReadInteger<uint64_t>(c.at("droppedEvents")),
                 ReadInteger<uint32_t>(c.at("lastError")), c.value("legacySuppressed", false)};
+        }
+        if (j.contains("captureTest")) {
+            const auto& test=j.at("captureTest");
+            session.captureTestMode=ReadInteger<int>(test.at("mode"));
+            if (ReadInteger<int>(test.at("version"))!=1 || session.captureTestMode<1 || session.captureTestMode>2)
+                throw std::runtime_error("Unsupported capture test");
+            session.testCursorConfined=test.at("cursorConfined").get<bool>();
+            session.testStartDrops=ReadInteger<uint64_t>(test.at("startDrops"));
+            session.testStartErrors=ReadInteger<uint64_t>(test.at("startErrors"));
         }
         auto readEvents = [](const json& source, std::vector<MouseEvent>& events) {
             if (!source.is_array()) throw std::runtime_error("Expected an event array");

@@ -48,6 +48,8 @@ private:
     void RenderMainWindow();
     void RenderDevicePanel();
     void RenderControlPanel();
+    void RenderCaptureTest();
+    int captureTestChoice_ = 2;
     void RenderPlotPanel();
     void RenderScaleControls();
     void ApplyAutoScaleB();

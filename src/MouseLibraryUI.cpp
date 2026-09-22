@@ -75,6 +75,7 @@ void App::DetectSessionRates() {
     catch (const std::exception& e) { libraryMessage_=e.what(); }
 }
 void App::SaveComparison() {
+    if (currentSession_.captureTestMode) { comparisonMessage_="Capture tests are diagnostic recordings and are not added to rankings."; return; }
     if (libraryReadOnly_ || libraryPath_.empty()) { comparisonMessage_="Mouse library is unavailable."; return; }
     try {
         if (!mouseLibrary_.AddComparison(currentSession_,latencyFit_,resultMethod_)) {

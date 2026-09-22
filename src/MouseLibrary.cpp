@@ -146,6 +146,7 @@ std::string MouseLibrary::RecordingKey(const RecordingSession& session) {
     } catch (...) { if (hash) BCryptDestroyHash(hash); if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0); throw; }
 }
 bool MouseLibrary::AddComparison(const RecordingSession& session, const LatencyFit& fit, int method) {
+    if (session.captureTestMode) return false;
     const auto* a=FindSetup(session.mouseA.setupId); const auto* b=FindSetup(session.mouseB.setupId);
     if (!fit.valid || fit.matchedCycles < 3 || !std::isfinite(fit.differenceMs) || !std::isfinite(fit.spreadMs) ||
         !std::isfinite(fit.binMs) || fit.spreadMs < 0 || fit.binMs <= 0 || method < 0 || method > 2 ||

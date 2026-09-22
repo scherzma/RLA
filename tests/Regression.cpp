@@ -308,6 +308,28 @@ struct InputEngineRegressionAccess {
 };
 
 struct AppRegressionAccess {
+    static void RunCaptureTest() {
+        App app; app.inputEngine_=std::make_unique<InputEngine>(); app.deviceManager_=std::make_unique<DeviceManager>();
+        app.StartRecording(); app.currentSession_.captureTestMode=2;
+        app.currentSession_.startTimestamp-=19*app.qpcFrequency_;
+        app.currentSession_.eventsA.push_back({nullptr,app.currentSession_.startTimestamp+100,3,4});
+        Check(app.liveTimesA_.empty(),"Capture-only test starts without plot data");
+        app.Update();
+        Check(app.state_==AppState::Ready && !app.autoRankPending_,"Timed test must stop and skip ranking");
+        Check(app.currentSession_.captureTestMode==2 && app.currentSession_.eventsA.size()==1 && app.liveVelocitiesA_.front()==5,
+              "Stopping capture-only mode must rebuild plots without changing saved events");
+        std::vector<MouseEvent> events={{nullptr,1000,1,0},{nullptr,2000,1,0},{nullptr,2000,1,0},{nullptr,3000,1,0}};
+        Check(Analyzer::EventRateInRange(events,0,1000,1000,2000)==2,"Test rates count duplicate timestamps and exclude the starting boundary");
+        Check(Analyzer::EventRateInRange(events,0,1000,1000,1000)==0,"Empty rate windows must be safe");
+        ImGui::CreateContext(); auto& io=ImGui::GetIO(); io.IniFilename=nullptr; io.DisplaySize=ImVec2(1280,900); io.DeltaTime=1.f/60;
+        unsigned char* pixels; int w,h; io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
+        for (int i=0;i<2;++i) {
+            ImGui::NewFrame(); ImGui::SetNextWindowSize(ImVec2(1200,600)); ImGui::Begin("Capture test summary"); ImGui::TextUnformatted("Controls"); app.RenderCaptureTest(); ImGui::End(); ImGui::Render();
+            Check(ImGui::GetDrawData()->TotalVtxCount>0,"Capture test summary must render");
+        }
+        ImGui::DestroyContext();
+    }
+
     static void CheckMovementCache(const RecordingSession& session) {
         App app; app.currentSession_=session; app.RebuildPlotData();
         Check(!app.showLibrary_ && !app.highlightLatencyMatch_,"Startup must show recording with highlights off");
@@ -973,6 +995,8 @@ static void RunMouseLibraryChecks() {
     library.RenameMouse(b,"Renamed test"); Check(library.Label(sb).starts_with("Renamed test"),"Renaming must update setup labels");
     auto session=LatencySession(); session.mouseA=library.Identity(sa); session.mouseB=library.Identity(sb);
     auto fit=Analyzer::FitLatency(session);
+    auto diagnostic=session; diagnostic.captureTestMode=2;
+    Check(!library.AddComparison(diagnostic,fit,2),"Capture tests must not enter rankings");
     Check(library.AddComparison(session,fit,2),"Valid identified comparison must be stored");
     Check(library.AddComparison(session,fit,2) && library.Comparisons().size()==1,"Rerunning one recording must not add weight");
     library.SetEnabled(0,false); library.AddComparison(session,fit,2);
@@ -1133,6 +1157,7 @@ int main(int argc, char** argv) {
         RunWindowMessageChecks();
         RunFramePacingChecks();
         RLA::AppRegressionAccess::CheckMovementCache(LatencySession());
+        RLA::AppRegressionAccess::RunCaptureTest();
         RLA::RendererRegressionAccess::Run();
         RunLatencyChecks();
         RunMouseLibraryChecks();
@@ -1153,6 +1178,7 @@ int main(int argc, char** argv) {
         session.endTimestamp = 110;
         session.qpcFrequency = 1000;
         session.capture = {true, 16000, 12000, 64, 1, 2, ERROR_ACCESS_DENIED, true};
+        session.captureTestMode=2; session.testCursorConfined=true; session.testStartDrops=1; session.testStartErrors=1;
         session.eventsA = { {nullptr, 101, 300000, 400000},
                             {nullptr, 102, (std::numeric_limits<int32_t>::min)(), 0} };
         DataStore store;
@@ -1165,6 +1191,7 @@ int main(int argc, char** argv) {
               "Capture diagnostics must survive JSON round trip");
         Check(loaded && loaded->eventsA.size() == 2 && loaded->eventsA[1].deltaX == session.eventsA[1].deltaX,
               "JSON round trip must preserve movement values");
+        Check(loaded->captureTestMode==2 && loaded->testCursorConfined && loaded->testStartDrops==1 && loaded->testStartErrors==1,"Test settings must survive save/load");
         AppRegressionAccess::Run(*loaded);
         Check(store.ExportToCsv(csv, *loaded), "CSV export failed");
         std::ifstream csvInput(csv);

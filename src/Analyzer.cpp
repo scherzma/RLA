@@ -237,6 +237,18 @@ EventTiming Analyzer::BuildEventTiming(const std::vector<MouseEvent>& events,
     return result;
 }
 
+double Analyzer::EventRateInRange(const std::vector<MouseEvent>& events, int64_t startTimestamp,
+    double frequency, double beginMs, double endMs) {
+    if (!std::isfinite(frequency) || frequency<=0 || !std::isfinite(beginMs) ||
+        !std::isfinite(endMs) || endMs<=beginMs) return 0;
+    auto upper=[&](double ms) {
+        return std::upper_bound(events.begin(),events.end(),ms,[&](double time,const MouseEvent& e) {
+            return time<(e.timestamp-startTimestamp)*1000.0/frequency;
+        });
+    };
+    return (upper(endMs)-upper(beginMs))*1000.0/(endMs-beginMs);
+}
+
 Analyzer::Analyzer() {
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);

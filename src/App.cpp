@@ -106,17 +106,16 @@ void App::Update() {
                  event.timestamp >= currentSession_.startTimestamp &&
                  (currentSession_.endTimestamp == 0 || event.timestamp <= currentSession_.endTimestamp)) {
             double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
-            double velocity = CalculateVelocity(event.deltaX, event.deltaY);
+            const bool preparePlot=currentSession_.captureTestMode!=2;
+            double velocity = preparePlot ? CalculateVelocity(event.deltaX, event.deltaY) : 0;
 
             if (deviceManager_->IsMouseA(event.deviceHandle)) {
                 currentSession_.eventsA.push_back(event);
-                liveTimesA_.push_back(timeMs);
-                liveVelocitiesA_.push_back(velocity);
+                if (preparePlot) { liveTimesA_.push_back(timeMs); liveVelocitiesA_.push_back(velocity); }
             }
             else if (deviceManager_->IsMouseB(event.deviceHandle)) {
                 currentSession_.eventsB.push_back(event);
-                liveTimesB_.push_back(timeMs);
-                liveVelocitiesB_.push_back(velocity);
+                if (preparePlot) { liveTimesB_.push_back(timeMs); liveVelocitiesB_.push_back(velocity); }
             }
         }
     }, stoppingRecording_ ? inputEngine_->GetBufferSize() : 8192);
@@ -124,6 +123,10 @@ void App::Update() {
     if (state_ == AppState::Recording && inputEngine_->IsRawCapture() && !stoppingRecording_ &&
         (stopClick || (hwnd_ && GetForegroundWindow() != hwnd_)))
         StopRecording();
+    if (state_==AppState::Recording && currentSession_.captureTestMode && !stoppingRecording_) {
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        if ((now.QuadPart-currentSession_.startTimestamp)*1000.0/currentSession_.qpcFrequency>=18000) StopRecording();
+    }
 }
 
 void App::Render() {
@@ -182,7 +185,9 @@ void App::RenderMainWindow() {
     RenderDevicePanel();
     RenderControlPanel();
     ImGui::Separator();
-    if (showLibrary_) {
+    if (state_==AppState::Recording && currentSession_.captureTestMode==2) {
+        ImGui::TextUnformatted("Capture-only test: graph processing is off. All movement reports are still recorded.");
+    } else if (showLibrary_) {
         if (ImGui::Button("Back to recording")) showLibrary_=false;
         ImGui::SameLine();
         if (ImGui::RadioButton("Mouse library",libraryPage_==0)) libraryPage_=0;
@@ -342,12 +347,82 @@ void App::RenderControlPanel() {
         ImGui::BeginDisabled(isRecording);
         ImGui::Checkbox("Raw capture (recommended)", &rawCaptureMode_);
         ImGui::EndDisabled();
+        ImGui::BeginDisabled(isRecording && currentSession_.captureTestMode!=0);
         if (ImGui::Checkbox("Keep cursor in window", &keepCursorInWindow_)) UpdateRecordingCursor();
+        ImGui::EndDisabled();
         ImGui::Text("Buffer: %.1f%%", inputEngine_->GetBufferUtilization()*100.0f);
         ImGui::TextUnformatted("Raw capture: click or press Esc to stop.");
         ImGui::EndPopup();
     }
 
+    RenderCaptureTest();
+}
+
+void App::RenderCaptureTest() {
+    ImGui::SameLine();
+    ImGui::BeginDisabled(state_==AppState::Recording || latencyTask_.valid());
+    if (ImGui::Button("Capture test")) ImGui::OpenPopup("Capture test settings");
+    ImGui::EndDisabled();
+    if (ImGui::BeginPopup("Capture test settings")) {
+        ImGui::TextUnformatted("Compare the same motion with and without live plotting.");
+        ImGui::RadioButton("Live plot (baseline)",&captureTestChoice_,1);
+        ImGui::RadioButton("Capture only (no plot processing)",&captureTestChoice_,2);
+        ImGui::TextUnformatted("18 seconds: prepare 3s, A only 5s, both 5s, A only 5s.");
+        ImGui::TextUnformatted("Keep polling rates, DPI, USB ports and movement speed unchanged.");
+        ImGui::TextUnformatted("Repeat once in each mode. Keep RLA in the foreground.");
+        ImGui::TextUnformatted("Run only ONE RLA instance. Close other RLA windows first.");
+        ImGui::TextUnformatted("Each test autosaves. Tests do not change mouse rates or rankings.");
+        ImGui::BeginDisabled(!deviceManager_->IsMouseAAssigned() || !deviceManager_->IsMouseBAssigned());
+        if (ImGui::Button("Start timed test")) {
+            StartRecording();
+            if (state_==AppState::Recording) {
+                currentSession_.captureTestMode=captureTestChoice_;
+                currentSession_.testCursorConfined=keepCursorInWindow_;
+                const auto capture=inputEngine_->GetCaptureDiagnostics();
+                currentSession_.testStartDrops=capture.droppedEvents;
+                currentSession_.testStartErrors=capture.readErrors;
+                showLibrary_=false; plotMode_=0;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+    if (!currentSession_.captureTestMode) return;
+    const bool recording=state_==AppState::Recording;
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    const double elapsed=((recording ? now.QuadPart : currentSession_.endTimestamp)-currentSession_.startTimestamp)*1000.0/currentSession_.qpcFrequency;
+    const char* mode=currentSession_.captureTestMode==2 ? "Capture only" : "Live plot";
+    if (recording) {
+        const char* instruction=elapsed<3000 ? "Get ready" : elapsed<8000 ? "Move A only" : elapsed<13000 ? "Move BOTH mice" : "Move A only again";
+        const double next=elapsed<3000 ? 3000 : elapsed<8000 ? 8000 : elapsed<13000 ? 13000 : 18000;
+        ImGui::TextColored(ImVec4(1,0.85f,0.3f,1),"TEST: %s | %s | %.1f s remaining",mode,instruction,(std::max)(0.0,(next-elapsed)/1000.0));
+        return;
+    }
+    ImGui::Text("Capture test: %s | %s",mode,elapsed>=18000 ? "Complete" : "Stopped early");
+    if (ImGui::BeginTable("Capture test rates",4,ImGuiTableFlags_RowBg)) {
+        for (const char* label : {"Stage","A events/s","B events/s","Total events/s"}) ImGui::TableSetupColumn(label);
+        ImGui::TableHeadersRow();
+        const char* stages[]={"A only","Both mice","A only again"};
+        for (int stage=0;stage<3;++stage) {
+            const double begin=4000+stage*5000,end=7500+stage*5000;
+            ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextUnformatted(stages[stage]);
+            if (elapsed<end) {
+                for (int col=0;col<3;++col) { ImGui::TableNextColumn(); ImGui::TextUnformatted("Incomplete"); }
+                continue;
+            }
+            const double a=Analyzer::EventRateInRange(currentSession_.eventsA,currentSession_.startTimestamp,currentSession_.qpcFrequency,begin,end);
+            const double b=Analyzer::EventRateInRange(currentSession_.eventsB,currentSession_.startTimestamp,currentSession_.qpcFrequency,begin,end);
+            for (double rate : {a,b,a+b}) { ImGui::TableNextColumn(); ImGui::Text("%.0f",rate); }
+        }
+        ImGui::EndTable();
+    }
+    const auto& c=currentSession_.capture;
+    ImGui::Text("During test: %llu buffer drops, %llu read errors | Raw capture: %s | Cursor confined: %s",
+        static_cast<unsigned long long>(c.droppedEvents>=currentSession_.testStartDrops ? c.droppedEvents-currentSession_.testStartDrops : 0),
+        static_cast<unsigned long long>(c.readErrors>=currentSession_.testStartErrors ? c.readErrors-currentSession_.testStartErrors : 0),
+        c.legacySuppressed ? "on" : "off",currentSession_.testCursorConfined ? "on" : "off");
+    ImGui::TextDisabled("Rates exclude stage transitions. Movement events measured by RLA, not USB polling. Test runs are not ranked.");
 }
 
 void App::RenderAutosaveControls() {
@@ -1146,14 +1221,15 @@ void App::StopRecording() {
         statusMessage_ += " Could not restore mouse controls. Press Esc to retry or Alt+F4 to close.";
     ReleaseRecordingCursor();
     stoppingRecording_ = false;
-    DetectSessionRates();
+    if (!currentSession_.captureTestMode) DetectSessionRates();
+    if (currentSession_.captureTestMode==2) RebuildPlotData();
     if (autosave_) {
         const auto* a = deviceManager_->GetMouseADevice();
         const auto* b = deviceManager_->GetMouseBDevice();
         try { autosave_->Save(currentSession_, a ? a->name : L"Unknown", b ? b->name : L"Unknown"); }
         catch (const std::exception& error) { statusMessage_ += std::string(" Autosave failed: ") + error.what(); }
     }
-    autoRankPending_=mouseLibrary_.autoRank && !libraryReadOnly_ &&
+    autoRankPending_=!currentSession_.captureTestMode && mouseLibrary_.autoRank && !libraryReadOnly_ &&
         !currentSession_.mouseA.setupId.empty() && !currentSession_.mouseB.setupId.empty() &&
         currentSession_.mouseA.pollingHz>0 && currentSession_.mouseB.pollingHz>0 &&
         currentSession_.mouseA.setupId!=currentSession_.mouseB.setupId &&

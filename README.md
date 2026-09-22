@@ -22,6 +22,16 @@ Both curves use the same centered smoothing window, with a 3 ms radius rounded t
 
 Completed recordings with movement are saved automatically to `%LOCALAPPDATA%\RLA\Autosaves`. Saving runs on a background worker, and each recording gets a new JSON file. A complete temporary file is renamed before it appears as a `.json` autosave. Normal app shutdown finishes pending saves. Autosaves are not a crash-recovery log for an unfinished recording. Use **Autosaves > Open folder** to find the files, then **File > Load Session** to open one. **Clear autosaves** asks before deleting only `RLA-autosave-*.json` files in that folder; it preserves other files, directories, and the current recording. Save errors appear in the status bar. There is no automatic deletion by age or size.
 
+## Capture test
+
+Use **Capture test** beside the recording controls to compare **Live plot (baseline)** with **Capture only (no plot processing)**. Close other RLA instances first; each instance registers its own mouse listener. Assign both mice first. Run one test in each mode, with the same polling rates, DPI, movement speed, USB ports and capture options. Keep RLA in the foreground.
+
+Each run has a three-second preparation countdown, then five seconds each of **A only**, **both mice**, and **A only again**. The run stops automatically at 18 seconds. Click or Esc can stop raw capture early. The result table counts movement events in seconds 4–7.5, 9–12.5 and 14–17.5, leaving time to change movement between stages. Incomplete stages are not reported as complete results.
+
+Capture-only mode skips live movement-vector preparation and all graph processing while recording. The UI still processes controls and drains the input queue. After stop, it restores the plot from the unchanged events. Test mode, cursor confinement and starting error counters are stored in the autosaved JSON. Tests do not update detected mouse rates or enter latency rankings. Loading a test restores its summary.
+
+If capture-only performs better, live display work contributes to the difference. If both modes show the drop, that does not prove a Windows fault: this test keeps the same hidden-window capture path in both runs. It measures application movement events, not USB polling.
+
 ## Mice and ranking
 
 Use **Mouse settings** beside A or B to name and link a device. Open **Library / rankings > Mouse library** to create or rename profiles. Add a wired or wireless setup under the same profile, then link each connected mouse to its setup. RLA remembers the Windows device interface. A new receiver or USB port can require a manual link. **Link setup to mouse** moves an existing setup under another profile without combining its results. Windows supplies an interface name through [GetRawInputDeviceInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getrawinputdeviceinfow); that name alone does not identify wired and wireless connections as the same physical mouse.
