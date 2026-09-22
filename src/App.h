@@ -104,6 +104,8 @@ private:
     int timingGraph_ = 0; // Both, intervals only, rate only.
     bool showTimingSettings_ = false;
     bool showTimingSummary_ = false;
+    bool showTimingRaw_ = true;
+    float timingRawOpacity_ = 0.18f;
     float timingGapMs_ = 20.0f;
     bool showTimingGaps_ = false;
     bool timingFitPending_ = true;

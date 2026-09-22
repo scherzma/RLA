@@ -329,6 +329,8 @@ void App::RenderTimingPanel() {
     ImGui::SameLine();
     ImGui::Checkbox("Summary", &showTimingSummary_);
     ImGui::SameLine();
+    ImGui::Checkbox("Raw points", &showTimingRaw_);
+    ImGui::SameLine();
     ImGui::Checkbox("Follow recording", &followTiming_);
     ImGui::SameLine();
     if (ImGui::Button("Reset timing view")) timingFitPending_ = true;
@@ -337,6 +339,8 @@ void App::RenderTimingPanel() {
         if (ImGui::SliderFloat("Rate window", &rateWindowMs_, 10.0f, 500.0f, "%.0f ms")) timingDirty_ = true;
         ImGui::SameLine();
         ImGui::Checkbox("Show 1000 / interval Hz", &showInstantHz_);
+        ImGui::SetNextItemWidth(180);
+        ImGui::SliderFloat("Point opacity", &timingRawOpacity_, 0.05f, 1.0f, "%.2f");
         ImGui::SetNextItemWidth(120);
         if (ImGui::SliderFloat("Long gap", &timingGapMs_, 2.0f, 1000.0f, "> %.0f ms", ImGuiSliderFlags_Logarithmic)) {
             timingDirty_ = true;
@@ -401,21 +405,27 @@ void App::RenderTimingPanel() {
     if (ImPlot::BeginSubplots("Event timing", timingGraph_ == 0 ? 2 : 1, 1, ImVec2(-1, height),
         ImPlotSubplotFlags_LinkCols | ImPlotSubplotFlags_NoTitle)) {
         const ImVec4 colorA(0.2f, 0.6f, 1.0f, 1.0f), colorB(1.0f, 0.4f, 0.2f, 1.0f);
+        const ImVec4 meanA(0.55f, 0.85f, 1.0f, 1.0f), meanB(1.0f, 0.85f, 0.45f, 1.0f);
+        auto scatter = [&](const char* label, const EventTiming& data, const std::vector<double>& values, ImVec4 color) {
+            if (!showTimingRaw_ || data.timesMs.empty()) return;
+            color.w = timingRawOpacity_;
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 1.5f, color, 0.0f, color);
+            ImPlot::PlotScatter(label, data.timesMs.data(), values.data(), static_cast<int>(data.timesMs.size()));
+        };
         if (timingGraph_ != 2) {
             if (timingFitPending_) ImPlot::SetNextAxisToFit(ImAxis_Y1);
             if (ImPlot::BeginPlot("Time between events")) {
                 setupAxes("Interval (ms)");
-                auto plot = [&](const char* label, const char* meanLabel, const EventTiming& data, ImVec4 color) {
+                // Draw both point clouds first so neither can cover the mean curves.
+                scatter("Mouse A - raw", timingA_, showTimingGaps_ ? timingA_.intervalsMs : timingA_.shortIntervalsMs, colorA);
+                scatter("Mouse B - raw", timingB_, showTimingGaps_ ? timingB_.intervalsMs : timingB_.shortIntervalsMs, colorB);
+                auto plot = [&](const char* meanLabel, const EventTiming& data, ImVec4 color) {
                     if (data.timesMs.empty()) return;
-                    ImVec4 faint = color; faint.w = 0.4f;
-                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 2.0f, faint, 0.0f, faint);
-                    const auto& intervals = showTimingGaps_ ? data.intervalsMs : data.shortIntervalsMs;
-                    ImPlot::PlotScatter(label, data.timesMs.data(), intervals.data(), static_cast<int>(data.timesMs.size()));
-                    ImPlot::SetNextLineStyle(color, 2.0f);
+                    ImPlot::SetNextLineStyle(color, 3.0f);
                     ImPlot::PlotLine(meanLabel, data.timesMs.data(), data.meanIntervalsMs.data(), static_cast<int>(data.timesMs.size()));
                 };
-                plot("Mouse A - raw", "Mouse A - mean", timingA_, colorA);
-                plot("Mouse B - raw", "Mouse B - mean", timingB_, colorB);
+                plot("Mouse A - mean", timingA_, meanA);
+                plot("Mouse B - mean", timingB_, meanB);
                 ImPlot::EndPlot();
             }
         }
@@ -423,19 +433,18 @@ void App::RenderTimingPanel() {
             if (timingFitPending_) ImPlot::SetNextAxisToFit(ImAxis_Y1);
             if (ImPlot::BeginPlot("Movement event rate")) {
                 setupAxes("Rate (Hz)");
-                auto plot = [&](const char* label, const char* rawLabel, const EventTiming& data, ImVec4 color) {
-                    if (showInstantHz_ && !data.timesMs.empty()) {
-                        ImVec4 faint = color; faint.w = 0.35f;
-                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 1.5f, faint, 0.0f, faint);
-                        ImPlot::PlotScatter(rawLabel, data.timesMs.data(), data.instantHz.data(), static_cast<int>(data.timesMs.size()));
-                    }
+                if (showInstantHz_) {
+                    scatter("Mouse A - interval Hz", timingA_, timingA_.instantHz, colorA);
+                    scatter("Mouse B - interval Hz", timingB_, timingB_.instantHz, colorB);
+                }
+                auto plot = [&](const char* label, const EventTiming& data, ImVec4 color) {
                     if (!data.rateTimesMs.empty()) {
-                        ImPlot::SetNextLineStyle(color, 2.0f);
+                        ImPlot::SetNextLineStyle(color, 3.0f);
                         ImPlot::PlotLine(label, data.rateTimesMs.data(), data.ratesHz.data(), static_cast<int>(data.rateTimesMs.size()));
                     }
                 };
-                plot("Mouse A - window rate", "Mouse A - interval Hz", timingA_, colorA);
-                plot("Mouse B - window rate", "Mouse B - interval Hz", timingB_, colorB);
+                plot("Mouse A - window rate", timingA_, meanA);
+                plot("Mouse B - window rate", timingB_, meanB);
                 ImPlot::EndPlot();
             }
         }

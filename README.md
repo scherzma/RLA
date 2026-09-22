@@ -32,6 +32,8 @@ The timing view's **Long gap** setting defaults to 20 ms. Longer intervals break
 
 The timing toolbar offers **Both graphs**, **Intervals only**, and **Hz only**. A single graph uses the full available plot height. In the two-graph view, drag the divider to adjust their relative heights. **Settings** and **Summary** start hidden and can be opened when needed. **Device assignment** also collapses; recording controls remain available.
 
+Timing curves use thick, light blue and light amber lines above smaller, faint raw points. Turn off **Raw points** for a clear view of the curves, or adjust **Point opacity** under **Settings**. These display controls do not change the timing calculations.
+
 The two timing plots share their time axis. Statistics cover the full recording. The rate uses the number of events in `(time - window, time]`, divided by the window duration. Recordings shorter than the window use their available duration. Timing data refreshes at most ten times per second during recording.
 
 The capture code stores movement events only. Timestamps are taken when the application processes Raw Input. Thus, the plots show observed movement-event arrival times, not hardware USB polling times. The session's stored counter frequency is used for imported recordings. See [Microsoft: RAWMOUSE](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse), [Microsoft: QueryPerformanceCounter](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter), and the capture implementation in `src/InputEngine.cpp`.
