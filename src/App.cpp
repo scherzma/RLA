@@ -85,6 +85,7 @@ void App::Update() {
             }
         }
     });
+    if (state_ == AppState::Recording) currentSession_.capture = inputEngine_->GetCaptureDiagnostics();
 }
 
 void App::Render() {
@@ -390,6 +391,12 @@ void App::RenderTimingPanel() {
             ImGui::EndTable();
         }
         ImGui::TextDisabled("Statistics include long gaps. Arrival times are measured in the application, not at the USB device.");
+        const auto& capture = currentSession_.capture;
+        if (capture.available) {
+            ImGui::TextWrapped("Buffered capture totals since app start: %llu mouse reports, %llu read in groups, largest batch %llu. Queue drops: %llu. Read errors: %llu (last code %u).",
+                capture.packets, capture.groupedPackets, capture.maxBatch, capture.droppedEvents, capture.readErrors, capture.lastError);
+            ImGui::TextWrapped("Reports in one batch share a read timestamp. Their individual arrival intervals are unknown; the window rate still counts each movement event.");
+        }
     }
     if (currentSession_.eventsA.empty() && currentSession_.eventsB.empty()) {
         ImGui::TextUnformatted("Record movement or load a session to see event timing.");

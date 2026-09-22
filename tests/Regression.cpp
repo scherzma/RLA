@@ -9,6 +9,8 @@
 #include <implot.h>
 #include <implot_internal.h>
 #include <string_view>
+#include <cstring>
+#include <climits>
 
 static void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -31,6 +33,99 @@ namespace RLA {
 struct InputEngineRegressionAccess {
     static void Push(InputEngine& engine, const MouseEvent& event) {
         Check(engine.eventBuffer_.push(event), "Test event could not be queued");
+    }
+
+    inline static std::vector<std::vector<BYTE>> batches;
+    inline static std::vector<UINT> counts;
+    inline static size_t nextBatch = 0;
+    inline static DWORD forcedError = 0;
+    static UINT WINAPI Read(PRAWINPUT output, PUINT size, UINT headerSize) {
+        Check(headerSize == sizeof(RAWINPUTHEADER), "Buffered read header size is incorrect");
+        if (forcedError) { SetLastError(forcedError); return UINT_MAX; }
+        if (nextBatch == batches.size()) return 0;
+        const auto& bytes = batches[nextBatch];
+        if (*size < bytes.size()) {
+            *size = static_cast<UINT>(bytes.size());
+            SetLastError(ERROR_INSUFFICIENT_BUFFER);
+            return UINT_MAX;
+        }
+        std::memcpy(output, bytes.data(), bytes.size());
+        *size = static_cast<UINT>(bytes.size());
+        return counts[nextBatch++];
+    }
+
+    static void Run() {
+        auto engine = std::make_unique<InputEngine>();
+        engine->running_ = true;
+        engine->rawBufferReader_ = &Read;
+        batches.clear(); counts.clear(); nextBatch = 0; forcedError = 0;
+        // One second of two 8 kHz mice, in 250 batches of 64 reports.
+        for (int batch = 0; batch < 250; ++batch) {
+            std::vector<BYTE> bytes(64 * sizeof(RAWINPUT));
+            for (int i = 0; i < 64; ++i) {
+                RAWINPUT raw{};
+                raw.header.dwType = RIM_TYPEMOUSE;
+                raw.header.dwSize = sizeof(raw);
+                raw.header.hDevice = reinterpret_cast<HANDLE>(uintptr_t(1 + i % 2));
+                raw.data.mouse.lLastX = batch * 64 + i + 1;
+                raw.data.mouse.lLastY = -raw.data.mouse.lLastX;
+                std::memcpy(bytes.data() + i * sizeof(raw), &raw, sizeof(raw));
+            }
+            batches.push_back(std::move(bytes)); counts.push_back(64);
+        }
+        while (nextBatch != batches.size()) Check(engine->DrainRawInput(), "Buffered drain failed");
+        Check(engine->DrainRawInput(), "Empty queue must succeed");
+        size_t received = 0;
+        int64_t previous = 0;
+        engine->ProcessEvents([&](const MouseEvent& e) {
+            Check(e.deltaX == received + 1 && e.deltaY == -e.deltaX, "Buffered reports must not be summed, lost or duplicated");
+            Check(e.deviceHandle == reinterpret_cast<HANDLE>(uintptr_t(1 + received % 2)), "Mouse identity must be preserved");
+            Check(e.timestamp >= previous && (received % 64 == 0 || e.timestamp == previous),
+                  "A batch must share a read timestamp, with ordered batches");
+            previous = e.timestamp; ++received;
+        });
+        const auto stats = engine->GetCaptureDiagnostics();
+        Check(received == 16000 && stats.packets == 16000 && stats.groupedPackets == 16000 &&
+              stats.maxBatch == 64 && stats.droppedEvents == 0 && stats.readErrors == 0,
+              "Buffered diagnostics must account for every report");
+
+        // A larger variable-size non-mouse record requires a retry and must be skipped.
+        batches = {std::vector<BYTE>(70000)}; counts = {1}; nextBatch = 0;
+        RAWINPUTHEADER header{}; header.dwType = RIM_TYPEHID; header.dwSize = 70000;
+        std::memcpy(batches[0].data(), &header, sizeof(header));
+        Check(engine->DrainRawInput() && nextBatch == 1 && engine->eventBuffer_.empty(),
+              "The buffer must grow and retry without treating HID data as mouse movement");
+        Check(engine->GetCaptureDiagnostics().readErrors == 0, "A successful resize is not a read failure");
+
+        forcedError = ERROR_ACCESS_DENIED;
+        Check(!engine->DrainRawInput(), "Read failures must be reported");
+        Check(engine->GetCaptureDiagnostics().readErrors == 1 &&
+              engine->GetCaptureDiagnostics().lastError == ERROR_ACCESS_DENIED, "Read errors must be counted");
+        forcedError = 0;
+        batches = {std::vector<BYTE>(sizeof(RAWINPUTHEADER))}; counts = {1}; nextBatch = 0;
+        header.dwType = RIM_TYPEMOUSE; header.dwSize = sizeof(RAWINPUTHEADER);
+        std::memcpy(batches[0].data(), &header, sizeof(header));
+        Check(!engine->DrainRawInput(), "Truncated mouse records must be rejected");
+        Check(engine->GetCaptureDiagnostics().lastError == ERROR_INVALID_DATA, "Malformed batches must be diagnosed");
+
+        RAWINPUT raw{}; raw.header.dwType = RIM_TYPEMOUSE; raw.header.dwSize = sizeof(raw);
+        Check(engine->ProcessRawBatch(reinterpret_cast<BYTE*>(&raw), sizeof(raw), 1, 100), "Zero movement is valid");
+        Check(engine->eventBuffer_.empty(), "Zero movement must not change the saved movement stream");
+        raw.data.mouse.lLastX = 7;
+        engine->running_ = false;
+        Check(engine->ProcessRawBatch(reinterpret_cast<BYTE*>(&raw), sizeof(raw), 1, 101), "Stopped input must drain");
+        Check(engine->eventBuffer_.empty(), "Stopped input must not queue events");
+        engine->running_ = true;
+        while (engine->eventBuffer_.push({nullptr, 0, 1, 0})) {}
+        Check(engine->ProcessRawBatch(reinterpret_cast<BYTE*>(&raw), sizeof(raw), 1, 102), "A full ring must not block capture");
+        Check(engine->GetCaptureDiagnostics().droppedEvents == 1, "Ring overflow must be counted");
+        engine.reset();
+        // Exercise actual registration, idle waiting and shutdown without a visible window.
+        engine = std::make_unique<InputEngine>();
+        Check(engine->Initialize() && engine->Start(), "Buffered input thread must initialize");
+        Sleep(20);
+        engine.reset();
+        std::cout << "Buffered capture: 16000 reports preserved; resize, errors, overflow and shutdown passed.\n";
     }
 };
 
@@ -437,6 +532,7 @@ int main(int argc, char** argv) {
             }
             return 0;
         }
+        RLA::InputEngineRegressionAccess::Run();
         RunBinningChecks();
         RunTimingPauseChecks();
         RunComparisonChecks();
@@ -452,11 +548,16 @@ int main(int argc, char** argv) {
         session.startTimestamp = 100;
         session.endTimestamp = 110;
         session.qpcFrequency = 1000;
+        session.capture = {true, 16000, 12000, 64, 1, 2, ERROR_ACCESS_DENIED};
         session.eventsA = { {nullptr, 101, 300000, 400000},
                             {nullptr, 102, (std::numeric_limits<int32_t>::min)(), 0} };
         DataStore store;
         Check(store.SaveToJson(path, session, {}, L"Mouse A", L"Mouse B"), "Save failed");
         auto loaded = store.LoadFromJson(path);
+        Check(loaded && loaded->capture.available && loaded->capture.packets == 16000 &&
+              loaded->capture.groupedPackets == 12000 && loaded->capture.maxBatch == 64 &&
+              loaded->capture.readErrors == 1 && loaded->capture.droppedEvents == 2 &&
+              loaded->capture.lastError == ERROR_ACCESS_DENIED, "Capture diagnostics must survive JSON round trip");
         Check(loaded && loaded->eventsA.size() == 2 && loaded->eventsA[1].deltaX == session.eventsA[1].deltaX,
               "JSON round trip must preserve movement values");
         AppRegressionAccess::Run(*loaded);
@@ -476,6 +577,7 @@ int main(int argc, char** argv) {
             Check(!store.GetLastError().empty(), "Load failure must have an error message");
         };
         auto invalid = baseline; invalid.erase("session"); reject(invalid);
+        invalid = baseline; invalid["capture"]["packets"] = -1; reject(invalid);
         invalid = baseline; invalid["version"] = 2; reject(invalid);
         invalid = baseline; invalid["session"]["qpcFrequency"] = 0; reject(invalid);
         invalid = baseline; invalid["session"]["qpcFrequency"] = 0.5; reject(invalid);

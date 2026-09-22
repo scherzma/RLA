@@ -57,12 +57,23 @@ enum class AppState {
 };
 
 // Recording session info
+struct CaptureDiagnostics {
+    bool available = false;
+    uint64_t packets = 0;
+    uint64_t groupedPackets = 0;
+    uint64_t maxBatch = 0;
+    uint64_t readErrors = 0;
+    uint64_t droppedEvents = 0;
+    uint32_t lastError = 0;
+};
+
 struct RecordingSession {
     int64_t startTimestamp = 0;
     int64_t endTimestamp = 0;
     std::vector<MouseEvent> eventsA;
     std::vector<MouseEvent> eventsB;
     double qpcFrequency = 0.0;
+    CaptureDiagnostics capture; // Capture totals since application start, if recorded.
 };
 
 } // namespace RLA

@@ -17,7 +17,7 @@ Auto Scale B enables time-weighted binning so different event rates do not chang
 
 **Weight by time** estimates uniform movement between adjacent reports. It splits each report's X/Y counts across the bins that overlap that interval. This reduces spikes caused by whole reports crossing bin boundaries. The plots and scale fit use the same binning code. Signed counts are conserved. Binned magnitudes are counts per bin; raw magnitudes are counts per event, so their heights can differ.
 
-The first report, duplicate timestamps, and reports after long gaps remain at arrival time. A long gap exceeds three times the median report interval or 50 ms. Movement is not spread across those gaps. Turn **Weight by time** off to inspect the original whole-event totals. Weighted bins are an estimate: arrival jitter can still affect them, and binning reduces time resolution. Use unbinned events and the timing view to inspect precise arrival times.
+The first report, duplicate timestamps, and reports after long gaps remain at arrival time. A long gap exceeds three times the median report interval or 50 ms. Movement is not spread across those gaps. Turn **Weight by time** off to inspect the original whole-event totals. Weighted bins are an estimate: arrival jitter can still affect them, and binning reduces time resolution. Use unbinned events and the timing view to inspect application read times.
 
 The timing view includes:
 
@@ -37,6 +37,12 @@ Timing curves use thick, light blue and light amber lines above smaller, faint r
 The two timing plots share their time axis. Statistics cover the full recording. The rate uses the number of events in `(time - window, time]`, divided by the window duration. Recordings shorter than the window use their available duration. Timing data refreshes at most ten times per second during recording.
 
 The capture code stores movement events only. Timestamps are taken when the application processes Raw Input. Thus, the plots show observed movement-event arrival times, not hardware USB polling times. The session's stored counter frequency is used for imported recordings. See [Microsoft: RAWMOUSE](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse), [Microsoft: QueryPerformanceCounter](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter), and the capture implementation in `src/InputEngine.cpp`.
+
+Capture uses `GetRawInputBuffer` on a dedicated thread. The message loop leaves `WM_INPUT` messages queued for buffered reads and wakes when input arrives; it does not wait for a rendering frame or a fixed-rate timer. Each mouse report keeps its own device and movement counts. The reusable buffer grows if required. This follows [Microsoft's buffered input guidance](https://learn.microsoft.com/en-us/windows/win32/inputdev/using-raw-input).
+
+Windows does not supply a device timestamp in `RAWINPUT`. All reports returned in one read therefore share the QPC time taken after that read. Zero intervals within a batch are expected; they are not measured zero-duration USB intervals. The window rate still counts each movement event. Buffered capture cannot recover original report times or split reports already combined upstream. Existing recordings remain unchanged.
+
+**Summary** shows capture totals since application start: mouse reports, reports read in groups, largest batch, application queue drops, and API/packet errors. These totals include all received mice and activity outside the recording. They are saved as optional `capture` metadata and frozen when recording stops. Older JSON sessions remain supported. Use a new recording to check high-rate capture; synthetic regression checks cannot confirm physical USB performance.
 
 ## Build and checks
 

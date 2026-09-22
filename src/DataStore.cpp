@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace RLA {
 
@@ -22,7 +23,10 @@ static T ReadInteger(const json& value) {
         }
     } else if (value.is_number_integer()) {
         const auto number = value.get<int64_t>();
-        if (number >= (std::numeric_limits<T>::min)() && number <= (std::numeric_limits<T>::max)()) {
+        if constexpr (std::is_unsigned_v<T>) {
+            if (number >= 0 && static_cast<uint64_t>(number) <= (std::numeric_limits<T>::max)())
+                return static_cast<T>(number);
+        } else if (number >= (std::numeric_limits<T>::min)() && number <= (std::numeric_limits<T>::max)()) {
             return static_cast<T>(number);
         }
     }
@@ -123,6 +127,14 @@ bool DataStore::SaveToJson(const std::filesystem::path& path,
             {"qpcFrequency", session.qpcFrequency}
         };
 
+        if (session.capture.available) {
+            const auto& c = session.capture;
+            j["capture"] = {{"method", "buffered"}, {"scope", "application"},
+                {"timestampMode", "batch-read-qpc"}, {"packets", c.packets},
+                {"groupedPackets", c.groupedPackets}, {"maxBatch", c.maxBatch},
+                {"readErrors", c.readErrors}, {"droppedEvents", c.droppedEvents}, {"lastError", c.lastError}};
+        }
+
         // Store events
         json eventsA = json::array();
         for (const auto& e : session.eventsA) {
@@ -181,6 +193,15 @@ std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::p
         session.startTimestamp = ReadInteger<int64_t>(metadata.at("startTimestamp"));
         session.endTimestamp = ReadInteger<int64_t>(metadata.at("endTimestamp"));
         session.qpcFrequency = metadata.at("qpcFrequency").get<double>();
+        if (j.contains("capture")) {
+            const auto& c = j.at("capture");
+            if (c.at("method") != "buffered" || c.at("scope") != "application" ||
+                c.at("timestampMode") != "batch-read-qpc") throw std::runtime_error("Unsupported capture metadata");
+            session.capture = {true, ReadInteger<uint64_t>(c.at("packets")),
+                ReadInteger<uint64_t>(c.at("groupedPackets")), ReadInteger<uint64_t>(c.at("maxBatch")),
+                ReadInteger<uint64_t>(c.at("readErrors")), ReadInteger<uint64_t>(c.at("droppedEvents")),
+                ReadInteger<uint32_t>(c.at("lastError"))};
+        }
         auto readEvents = [](const json& source, std::vector<MouseEvent>& events) {
             if (!source.is_array()) throw std::runtime_error("Expected an event array");
             events.reserve(source.size());

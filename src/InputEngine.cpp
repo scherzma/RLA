@@ -1,11 +1,11 @@
 #include "InputEngine.h"
 
-#include <stdexcept>
+#include <algorithm>
+#include <climits>
+#include <cstddef>
+#include <cstring>
 
 namespace RLA {
-
-// Static pointer for WndProc to access the instance
-static InputEngine* g_inputEngineInstance = nullptr;
 
 InputEngine::InputEngine() {
     LARGE_INTEGER freq;
@@ -28,14 +28,17 @@ InputEngine::~InputEngine() {
     if (inputThread_.joinable()) {
         inputThread_.join();
     }
-
-    g_inputEngineInstance = nullptr;
 }
 
 bool InputEngine::Initialize() {
     if (initialized_) return true;
 
-    g_inputEngineInstance = this;
+#ifndef _WIN64
+    // WOW64 returns a different buffered RAWINPUT layout. Use the x64 build
+    // rather than silently interpreting its headers as native 32-bit headers.
+    BOOL wow64 = FALSE;
+    if (!IsWow64Process(GetCurrentProcess(), &wow64) || wow64) return false;
+#endif
 
     // Start the input thread - it will create its own window and message loop
     inputThread_ = std::thread(&InputEngine::InputThreadFunc, this);
@@ -55,12 +58,6 @@ bool InputEngine::Initialize() {
 
 LRESULT CALLBACK InputEngine::InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_INPUT:
-            if (g_inputEngineInstance) {
-                g_inputEngineInstance->ProcessRawInput(lParam);
-            }
-            return DefWindowProc(hwnd, msg, wParam, lParam);
-
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -121,25 +118,30 @@ void InputEngine::InputThreadFunc() {
     // Signal that we're ready
     threadReady_ = true;
 
-    // Run the message loop for this thread
-    // This loop is NOT blocked by VSync - it runs as fast as messages arrive
+    // Leave WM_INPUT in the queue for GetRawInputBuffer. GetMessage or an
+    // unfiltered PeekMessage would remove packets before the buffered read.
+    // RIDEV_DEVNOTIFY is deliberately not used: its messages share this queue.
     MSG msg{};
     while (!shouldStop_.load()) {
-        // Use GetMessage for efficient waiting (doesn't spin CPU)
-        // But check for quit periodically
-        BOOL result = GetMessage(&msg, nullptr, 0, 0);
-
-        if (result == 0) {
-            // WM_QUIT received
-            break;
-        }
-        else if (result == -1) {
-            // Error
-            break;
-        }
-        else {
+        const bool readOk = DrainRawInput();
+        while (PeekMessage(&msg, nullptr, 0, WM_INPUT - 1, PM_REMOVE) ||
+               PeekMessage(&msg, nullptr, WM_INPUT + 1, UINT_MAX, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                shouldStop_ = true;
+                break;
+            }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
+        }
+        if (shouldStop_) break;
+        // Retry errors without spinning a time-critical thread on a stuck queue.
+        if (!readOk) Sleep(1);
+        const DWORD wait = MsgWaitForMultipleObjectsEx(0, nullptr, INFINITE,
+            QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (wait == WAIT_FAILED) {
+            lastError_ = GetLastError();
+            ++readErrors_;
+            break;
         }
     }
 
@@ -187,40 +189,67 @@ void InputEngine::Stop() {
     running_ = false;
 }
 
-void InputEngine::ProcessRawInput(LPARAM lParam) {
-    if (!running_) return;
-
-    // Get timestamp IMMEDIATELY - this is the key improvement!
-    // Since we're on a dedicated thread not blocked by VSync,
-    // this timestamp is as close to the actual event time as possible.
-    LARGE_INTEGER timestamp;
-    QueryPerformanceCounter(&timestamp);
-
-    // Use stack-allocated buffer - RAWINPUT for mouse is always the same size
-    // This avoids heap allocation overhead which was limiting throughput to ~2600 Hz
-    alignas(8) BYTE buffer[sizeof(RAWINPUT)];
-    UINT size = sizeof(buffer);
-
-    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, buffer, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1)) {
-        return;
+bool InputEngine::DrainRawInput() {
+    // Bound each drain so shutdown messages are serviced under continuous input.
+    for (int batch = 0; batch < 32 && !shouldStop_; ++batch) {
+        UINT size = static_cast<UINT>(rawBuffer_.size() * sizeof(uint64_t));
+        const UINT count = rawBufferReader_(reinterpret_cast<RAWINPUT*>(rawBuffer_.data()),
+            &size, sizeof(RAWINPUTHEADER));
+        if (count == UINT_MAX) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_INSUFFICIENT_BUFFER && size > rawBuffer_.size() * sizeof(uint64_t) &&
+                size <= 1024 * 1024) {
+                rawBuffer_.resize((size + 7) / 8);
+                continue;
+            }
+            lastError_ = error;
+            ++readErrors_;
+            return false;
+        }
+        if (count == 0) return true;
+        LARGE_INTEGER timestamp;
+        QueryPerformanceCounter(&timestamp);
+        // RAWINPUT has no device timestamp. Preserve the shared read time;
+        // assigning a fresh timestamp per packet would measure parser speed.
+        if (!ProcessRawBatch(reinterpret_cast<const BYTE*>(rawBuffer_.data()),
+            rawBuffer_.size() * sizeof(uint64_t), count, timestamp.QuadPart)) {
+            lastError_ = ERROR_INVALID_DATA;
+            ++readErrors_;
+            return false;
+        }
     }
+    return true;
+}
 
-    RAWINPUT* raw = reinterpret_cast<RAWINPUT*>(buffer);
-
-    if (raw->header.dwType != RIM_TYPEMOUSE) {
-        return;
+bool InputEngine::ProcessRawBatch(const BYTE* bytes, size_t size, UINT count, int64_t timestamp) {
+    maxBatch_.store((std::max)(maxBatch_.load(std::memory_order_relaxed), uint64_t(count)), std::memory_order_relaxed);
+    size_t offset = 0;
+    for (UINT i = 0; i < count; ++i) {
+        if (offset > size || size - offset < sizeof(RAWINPUTHEADER)) return false;
+        RAWINPUTHEADER header;
+        std::memcpy(&header, bytes + offset, sizeof(header));
+        if (header.dwSize < sizeof(header) || header.dwSize > size - offset) return false;
+        if (header.dwType == RIM_TYPEMOUSE) {
+            if (header.dwSize < offsetof(RAWINPUT, data) + sizeof(RAWMOUSE)) return false;
+            RAWMOUSE mouse;
+            std::memcpy(&mouse, bytes + offset + offsetof(RAWINPUT, data), sizeof(mouse));
+            packets_.fetch_add(1, std::memory_order_relaxed);
+            if (count > 1) groupedPackets_.fetch_add(1, std::memory_order_relaxed);
+            if (running_ && (mouse.lLastX != 0 || mouse.lLastY != 0)) {
+                const MouseEvent event{header.hDevice, timestamp, mouse.lLastX, mouse.lLastY};
+                if (!eventBuffer_.push(event)) droppedEvents_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        // NEXTRAWINPUTBLOCK alignment, with checked bounds before each read.
+        offset += (static_cast<size_t>(header.dwSize) + sizeof(void*) - 1) & ~(sizeof(void*) - 1);
     }
+    return true;
+}
 
-    MouseEvent event{};
-    event.deviceHandle = raw->header.hDevice;
-    event.timestamp = timestamp.QuadPart;
-    event.deltaX = raw->data.mouse.lLastX;
-    event.deltaY = raw->data.mouse.lLastY;
-
-    // Only push if there's actual movement
-    if (event.deltaX != 0 || event.deltaY != 0) {
-        eventBuffer_.push(event);
-    }
+CaptureDiagnostics InputEngine::GetCaptureDiagnostics() const {
+    return {true, packets_.load(std::memory_order_relaxed), groupedPackets_.load(std::memory_order_relaxed),
+        maxBatch_.load(std::memory_order_relaxed), readErrors_.load(std::memory_order_relaxed),
+        droppedEvents_.load(std::memory_order_relaxed), lastError_.load(std::memory_order_relaxed)};
 }
 
 size_t InputEngine::ProcessEvents(const EventCallback& callback) {

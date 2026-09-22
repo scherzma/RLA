@@ -18,3 +18,5 @@ References used for the fixes:
 
 - [Microsoft: QueryPerformanceFrequency](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency). The counter frequency is fixed at system boot. Imported recordings must use their stored frequency.
 - [nlohmann JSON: Number handling](https://json.nlohmann.me/features/types/number_handling/). Numeric conversions can change the value. The loader checks integer types and ranges before conversion.
+
+Buffered-input checks simulate 16,000 separate reports from two mice. They check report order, device identity, unchanged counts, shared batch timestamps, buffer growth, empty queues, invalid packets, read failures, queue overflow, and stopped input. A real message-only window checks registration and thread shutdown. JSON round trips preserve optional capture diagnostics; negative counters are rejected. These tests do not emulate USB hardware or prove real 8 kHz performance.

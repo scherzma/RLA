@@ -37,6 +37,7 @@ public:
     size_t GetBufferSize() const { return eventBuffer_.size(); }
     size_t GetBufferCapacity() const { return eventBuffer_.capacity(); }
     float GetBufferUtilization() const;
+    CaptureDiagnostics GetCaptureDiagnostics() const;
 
     // Get event rate statistics (events per second)
     double GetEventRateA() const { return eventRateA_; }
@@ -53,8 +54,9 @@ private:
     // Window procedure for the hidden input window
     static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-    // Process raw input message (called on input thread)
-    void ProcessRawInput(LPARAM lParam);
+    // Returns false on an API/packet error. Called only on the input thread.
+    bool DrainRawInput();
+    bool ProcessRawBatch(const BYTE* bytes, size_t size, UINT count, int64_t timestamp);
 
     // Register/unregister raw input for the hidden window
     bool RegisterRawInput(HWND hwnd);
@@ -71,6 +73,13 @@ private:
     std::atomic<bool> shouldStop_{false};
 
     RingBuffer<MouseEvent, RING_BUFFER_SIZE> eventBuffer_;
+
+    // Reused, 8-byte aligned storage. No allocation in the normal input path.
+    std::vector<uint64_t> rawBuffer_ = std::vector<uint64_t>(8192);
+    decltype(&GetRawInputBuffer) rawBufferReader_ = &GetRawInputBuffer;
+    std::atomic<uint64_t> packets_{0}, groupedPackets_{0}, maxBatch_{0};
+    std::atomic<uint64_t> readErrors_{0}, droppedEvents_{0};
+    std::atomic<uint32_t> lastError_{0};
 
     // QPC frequency for timestamp conversion
     int64_t qpcFrequency_ = 0;
