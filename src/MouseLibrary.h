@@ -16,6 +16,11 @@ struct SavedComparison {
     size_t cycles = 0;
     bool enabled = true;
 };
+struct DirectRunSummary {
+    size_t recordings = 0;
+    double fastestMs = 0, latestMs = 0;
+    std::string fastestKey, latestKey;
+};
 struct MouseRank {
     std::string setupId;
     int group = 0, place = 0; // Group zero means not yet compared.
@@ -47,6 +52,7 @@ public:
     void DeleteSetup(const std::string& id);
     void DeleteComparison(const std::string& key, int method);
     std::vector<MouseRank> Ranking(int method) const;
+    DirectRunSummary DirectRuns(const std::string& setup, const std::string& reference, int method) const;
     bool Load(const std::filesystem::path& path, std::string& error);
     std::string Save(const std::filesystem::path& path) const; // Empty string means success.
     static std::string DeviceKey(const std::wstring& path);

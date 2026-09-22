@@ -338,32 +338,63 @@ void App::RenderMouseLibrary() {
         try { ranking_=mouseLibrary_.Ranking(rankMethod_); } catch (const std::exception& e) { ranking_.clear(); libraryMessage_=e.what(); }
         rankingDirty_=false;
     }
-    ImGui::TextWrapped("Lower is earlier within the same group. Separate groups have no shared reference. Values are relative estimates, not absolute device latency. Small differences can be inconclusive.");
-    if (ImGui::BeginTable("Mouse ranking",5,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV)) {
-        ImGui::TableSetupColumn("Group / place",ImGuiTableColumnFlags_WidthFixed,100);
-        ImGui::TableSetupColumn("Mouse setup",ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Relative ms",ImGuiTableColumnFlags_WidthFixed,110);
-        ImGui::TableSetupColumn("Recordings",ImGuiTableColumnFlags_WidthFixed,90);
-        ImGui::TableSetupColumn("Group mismatch ms",ImGuiTableColumnFlags_WidthFixed,150);
-        ImGui::TableHeadersRow();
-        for (const auto& row : ranking_) {
-            const auto* setup=mouseLibrary_.FindSetup(row.setupId);
-            if (!setup || !setup->pollingHz) continue;
-            ImGui::TableNextRow(); ImGui::TableNextColumn();
-            if (row.group) ImGui::Text("%d / %d",row.group,row.place); else ImGui::TextUnformatted("Unranked");
-            ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(row.setupId).c_str());
-            ImGui::TableNextColumn(); if (row.group) ImGui::Text("+%.3f",row.relativeMs); else ImGui::TextUnformatted("--");
-            ImGui::TableNextColumn(); ImGui::Text("%zu",row.recordings);
-            ImGui::TableNextColumn(); if (row.group) ImGui::Text("%.3f",row.residualMs); else ImGui::TextUnformatted("--");
-        }
-        ImGui::EndTable();
+    ImGui::TextWrapped("Typical combines enabled runs. Fastest and Latest show single runs against the reference. Negative = faster; positive = slower. Order is based on Typical.");
+    std::map<int,const MouseRank*> references;
+    for (const auto& row : ranking_) if (row.group) {
+        auto& reference=references[row.group];
+        if (!reference || row.recordings>reference->recordings) reference=&row;
     }
+    if (references.size()>1) ImGui::TextWrapped("These tables have no shared comparison. Their places cannot be compared with each other.");
+    if (references.empty()) ImGui::TextDisabled("No enabled comparisons yet.");
+    std::string openRankingKey;
+    for (const auto& [group,reference] : references) {
+        ImGui::PushID(group);
+        ImGui::SeparatorText(("Difference from "+mouseLibrary_.Label(reference->setupId)).c_str());
+        if (ImGui::BeginTable("Mouse ranking",6,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("Place",ImGuiTableColumnFlags_WidthFixed,45);
+            ImGui::TableSetupColumn("Mouse setup",ImGuiTableColumnFlags_WidthStretch);
+            for (const char* title : {"Typical ms","Fastest run ms","Latest run ms"})
+                ImGui::TableSetupColumn(title,ImGuiTableColumnFlags_WidthFixed,115);
+            ImGui::TableSetupColumn("Runs",ImGuiTableColumnFlags_WidthFixed,55);
+            ImGui::TableHeadersRow();
+            for (const auto& row : ranking_) {
+                if (row.group!=group) continue;
+                ImGui::PushID(row.setupId.c_str());
+                ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("%d",row.place);
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(row.setupId).c_str());
+                ImGui::TableNextColumn(); ImGui::Text("%+.3f",row.relativeMs-reference->relativeMs);
+                const bool isReference=row.setupId==reference->setupId;
+                const auto direct=mouseLibrary_.DirectRuns(row.setupId,reference->setupId,rankMethod_);
+                auto resultCell=[&](const char* id,double value,const std::string& key) {
+                    ImGui::TableNextColumn();
+                    if (isReference) { ImGui::TextDisabled("Reference"); return; }
+                    if (!direct.recordings) {
+                        ImGui::TextDisabled("--");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("No direct run against this reference. Typical uses linked comparisons.");
+                        return;
+                    }
+                    ImGui::PushID(id); ImGui::BeginDisabled(state_==AppState::Recording);
+                    if (ImGui::Selectable(std::format("{:+.3f}",value).c_str(),false)) openRankingKey=key;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to open this recording.");
+                    ImGui::EndDisabled(); ImGui::PopID();
+                };
+                resultCell("fastest",direct.fastestMs,direct.fastestKey);
+                resultCell("latest",direct.latestMs,direct.latestKey);
+                ImGui::TableNextColumn(); ImGui::Text("%zu",row.recordings);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enabled runs with any reference: %zu. Direct runs against this table's reference: %zu.",row.recordings,direct.recordings);
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::PopID();
+    }
+    if (!openRankingKey.empty()) OpenRankedRun(openRankingKey);
     if (ImGui::TreeNode("How rankings work")) {
-        ImGui::TextWrapped("Pair medians feed the ranking. Group mismatch measures disagreement in comparison loops, not measurement accuracy. Best run means the smallest spread, not the lowest latency.");
+        ImGui::TextWrapped("Typical uses the median for each mouse pair and combines linked comparisons. A single fast run can differ from Typical. Fastest means the lowest measured difference, not the most repeatable result. Separate tables are needed only when no comparison connects their mice.");
         ImGui::TreePop();
     }
     if (ImGui::CollapsingHeader("Saved runs",ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextWrapped("All accepted runs are retained. Best marks the smallest spread against the same reference and method; ties favor more cycles. It does not select the lowest latency value.");
+        ImGui::TextWrapped("All accepted runs are retained. Most stable marks the smallest spread against the same reference and method; ties favor more cycles.");
         const auto& runs=mouseLibrary_.Comparisons();
         std::map<std::pair<std::string,std::string>,size_t> bestRuns;
         for (size_t i=0;i<runs.size();++i) {
@@ -394,7 +425,7 @@ void App::RenderMouseLibrary() {
                 ImGui::TableNextColumn(); ImGui::Text("%.3f",run.spreadMs);
                 ImGui::TableNextColumn(); ImGui::Text("%zu",run.cycles);
                 ImGui::TableNextColumn(); ImGui::BeginDisabled(state_==AppState::Recording);
-                if (ImGui::SmallButton(best ? "Open best" : "Open")) openKey=run.recordingKey;
+                if (ImGui::SmallButton(best ? "Most stable" : "Open")) openKey=run.recordingKey;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",run.savedAt.c_str());
                 ImGui::EndDisabled();
                 ImGui::TableNextColumn(); ImGui::BeginDisabled(libraryReadOnly_ || state_==AppState::Recording);

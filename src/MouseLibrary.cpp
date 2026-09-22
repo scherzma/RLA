@@ -221,6 +221,27 @@ void MouseLibrary::SetEnabled(size_t index, bool enabled) {
     comparisons_[index].enabled = enabled;
 }
 
+DirectRunSummary MouseLibrary::DirectRuns(const std::string& setup, const std::string& reference, int method) const {
+    DirectRunSummary result;
+    std::string latestTime;
+    if (setup==reference) return result;
+    for (const auto& run : comparisons_) {
+        if (!run.enabled || run.method!=method) continue;
+        double delta;
+        if (run.setupA==reference && run.setupB==setup) delta=run.differenceMs;
+        else if (run.setupB==reference && run.setupA==setup) delta=-run.differenceMs;
+        else continue;
+        if (!result.recordings || delta<result.fastestMs) {
+            result.fastestMs=delta; result.fastestKey=run.recordingKey;
+        }
+        if (!result.recordings || run.savedAt>=latestTime) {
+            result.latestMs=delta; result.latestKey=run.recordingKey; latestTime=run.savedAt;
+        }
+        ++result.recordings;
+    }
+    return result;
+}
+
 std::vector<MouseRank> MouseLibrary::Ranking(int method) const {
     // Robust median per pair, then fit B-A constraints within each connected group.
     using Pair = std::pair<size_t, size_t>;

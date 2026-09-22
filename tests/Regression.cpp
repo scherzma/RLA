@@ -1062,6 +1062,32 @@ static void RunMouseLibraryChecks() {
     library.RenameMouse(b,"Renamed test"); Check(library.Label(sb).starts_with("Renamed test"),"Renaming must update setup labels");
     auto session=LatencySession(); session.mouseA=library.Identity(sa); session.mouseB=library.Identity(sb);
     auto fit=Analyzer::FitLatency(session);
+    {
+        MouseLibrary history=library;
+        auto sample=session; auto result=fit;
+        for (double value : {0.764,0.825,0.706,0.651,-0.330}) {
+            ++sample.endTimestamp; result.differenceMs=value;
+            Check(history.AddComparison(sample,result,2),"Mixed results must be accepted");
+        }
+        auto summary=history.DirectRuns(sb,sa,2);
+        Check(summary.recordings==5 && std::abs(summary.fastestMs+0.330)<1e-9 && std::abs(summary.latestMs+0.330)<1e-9,
+              "Fastest and latest must show a winning run even when the typical result is slower");
+        const auto typical=history.Ranking(2);
+        double referenceMs=0,testMs=0;
+        for (const auto& row : typical) { if (row.setupId==sa) referenceMs=row.relativeMs; if (row.setupId==sb) testMs=row.relativeMs; }
+        Check(std::abs(testMs-referenceMs-0.706)<1e-9,"Displaying a fastest run must preserve the typical median");
+        ++sample.endTimestamp; std::swap(sample.mouseA,sample.mouseB); result.differenceMs=0.2;
+        history.AddComparison(sample,result,2);
+        summary=history.DirectRuns(sb,sa,2);
+        Check(summary.recordings==6 && std::abs(summary.latestMs+0.2)<1e-9 && std::abs(summary.fastestMs+0.330)<1e-9,
+              "Reversed A/B assignments must preserve fastest and latest signs");
+        history.SetEnabled(5,false);
+        result.differenceMs=8; history.AddComparison(sample,result,0);
+        summary=history.DirectRuns(sb,sa,2);
+        Check(summary.recordings==5 && std::abs(summary.latestMs+0.330)<1e-9,
+              "Disabled runs and other methods must not affect direct summaries");
+        Check(history.DirectRuns(sc,sa,2).recordings==0,"Indirect or absent comparisons must not invent fastest runs");
+    }
     auto diagnostic=session; diagnostic.captureTestMode=2;
     Check(!library.AddComparison(diagnostic,fit,2),"Capture tests must not enter rankings");
     Check(library.AddComparison(session,fit,2),"Valid identified comparison must be stored");
