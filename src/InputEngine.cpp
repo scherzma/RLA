@@ -153,17 +153,30 @@ void InputEngine::InputThreadFunc() {
     }
 }
 
-bool InputEngine::RegisterRawInput(HWND hwnd) {
+bool InputEngine::RegisterRawInput(HWND hwnd, bool noLegacy) {
     RAWINPUTDEVICE rid{};
     rid.usUsagePage = 0x01; // HID_USAGE_PAGE_GENERIC
     rid.usUsage = 0x02;     // HID_USAGE_GENERIC_MOUSE
-    rid.dwFlags = RIDEV_INPUTSINK; // Receive input even when not focused
+    rid.dwFlags = RIDEV_INPUTSINK | (noLegacy ? RIDEV_NOLEGACY : 0);
     rid.hwndTarget = hwnd;
 
-    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+    if (!rawDeviceRegistrar_(&rid, 1, sizeof(rid))) {
         return false;
     }
 
+    return true;
+}
+
+bool InputEngine::SetRawCapture(bool enabled) {
+    if (rawCapture_.load() == enabled) return true;
+    if (!initialized_ || shouldStop_) return false;
+    if (!RegisterRawInput(inputHwnd_, enabled)) {
+        lastError_ = GetLastError();
+        ++readErrors_;
+        return false;
+    }
+    stopClick_ = false;
+    rawCapture_ = enabled;
     return true;
 }
 
@@ -174,7 +187,7 @@ void InputEngine::UnregisterRawInput() {
     rid.dwFlags = RIDEV_REMOVE;
     rid.hwndTarget = nullptr;
 
-    RegisterRawInputDevices(&rid, 1, sizeof(rid));
+    rawDeviceRegistrar_(&rid, 1, sizeof(rid));
 }
 
 bool InputEngine::Start() {
@@ -233,6 +246,9 @@ bool InputEngine::ProcessRawBatch(const BYTE* bytes, size_t size, UINT count, in
             if (header.dwSize < offsetof(RAWINPUT, data) + sizeof(RAWMOUSE)) return false;
             RAWMOUSE mouse;
             std::memcpy(&mouse, bytes + offset + offsetof(RAWINPUT, data), sizeof(mouse));
+            // Ordinary button messages are disabled in raw capture mode.
+            // Retain a stop gesture even on reports with no movement.
+            if (rawCapture_ && (mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN)) stopClick_ = true;
             packets_.fetch_add(1, std::memory_order_relaxed);
             if (count > 1) groupedPackets_.fetch_add(1, std::memory_order_relaxed);
             if (running_ && (mouse.lLastX != 0 || mouse.lLastY != 0)) {
@@ -249,7 +265,7 @@ bool InputEngine::ProcessRawBatch(const BYTE* bytes, size_t size, UINT count, in
 CaptureDiagnostics InputEngine::GetCaptureDiagnostics() const {
     return {true, packets_.load(std::memory_order_relaxed), groupedPackets_.load(std::memory_order_relaxed),
         maxBatch_.load(std::memory_order_relaxed), readErrors_.load(std::memory_order_relaxed),
-        droppedEvents_.load(std::memory_order_relaxed), lastError_.load(std::memory_order_relaxed)};
+        droppedEvents_.load(std::memory_order_relaxed), lastError_.load(std::memory_order_relaxed), rawCapture_.load()};
 }
 
 size_t InputEngine::ProcessEvents(const EventCallback& callback) {

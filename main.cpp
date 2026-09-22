@@ -21,16 +21,15 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 static std::unique_ptr<RLA::App> g_app;
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Always keep the raw-capture exit path available, even if ImGui has focus.
+    if (g_app && msg == WM_KEYDOWN && wParam == VK_ESCAPE) g_app->OnCaptureEscape();
+    if (g_app && msg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) g_app->OnCaptureFocusLost();
     // Let ImGui handle input first
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) {
         return true;
     }
 
     switch (msg) {
-        case WM_ACTIVATE:
-            if (LOWORD(wParam) == WA_INACTIVE && g_app) g_app->ReleaseRecordingCursor();
-            break;
-
         case WM_ENTERSIZEMOVE:
             if (g_app) g_app->ReleaseRecordingCursor();
             break;

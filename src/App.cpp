@@ -19,7 +19,10 @@ App::App() {
     qpcFrequency_ = freq.QuadPart;
 }
 
-App::~App() { ReleaseRecordingCursor(); }
+App::~App() {
+    if (inputEngine_) inputEngine_->SetRawCapture(false);
+    ReleaseRecordingCursor();
+}
 
 bool App::Initialize(HWND hwnd, int width, int height) {
     hwnd_ = hwnd;
@@ -50,6 +53,7 @@ bool App::Initialize(HWND hwnd, int width, int height) {
 
 void App::Update() {
     UpdateRecordingCursor();
+    const bool stopClick = inputEngine_->TakeStopClick();
     // Process input events
     inputEngine_->ProcessEvents([this](const MouseEvent& event) {
         // Handle device assignment
@@ -88,6 +92,9 @@ void App::Update() {
         }
     });
     if (state_ == AppState::Recording) currentSession_.capture = inputEngine_->GetCaptureDiagnostics();
+    if (state_ == AppState::Recording && inputEngine_->IsRawCapture() && !stoppingRecording_ &&
+        (stopClick || (hwnd_ && GetForegroundWindow() != hwnd_)))
+        StopRecording();
 }
 
 void App::Render() {
@@ -251,6 +258,9 @@ void App::RenderControlPanel() {
         if (ImGui::Button("Start Recording")) {
             StartRecording();
         }
+        ImGui::SameLine();
+        ImGui::Checkbox("Raw capture", &rawCaptureMode_);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disables ordinary mouse messages during recording to reduce input processing.\nClick or press Esc to stop. Normal controls return on stop or focus loss.");
     }
     else {
         if (ImGui::Button("Stop Recording")) {
@@ -258,6 +268,10 @@ void App::RenderControlPanel() {
         }
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "RECORDING");
+        if (inputEngine_->IsRawCapture()) {
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Click or Esc to stop");
+        }
         ImGui::SameLine();
         ImGui::Text("Events: A=%zu B=%zu",
                    currentSession_.eventsA.size(),
@@ -398,9 +412,10 @@ void App::RenderTimingPanel() {
         ImGui::TextDisabled("Statistics include long gaps. Arrival times are measured in the application, not at the USB device.");
         const auto& capture = currentSession_.capture;
         if (capture.available) {
-            ImGui::TextWrapped("Buffered capture totals since app start: %llu mouse reports, %llu read in groups, largest batch %llu. Queue drops: %llu. Read errors: %llu (last code %u).",
+            ImGui::TextWrapped("Buffered capture totals since app start: %llu mouse reports, %llu read in groups, largest batch %llu. Queue drops: %llu. Capture errors: %llu (last code %u).",
                 capture.packets, capture.groupedPackets, capture.maxBatch, capture.droppedEvents, capture.readErrors, capture.lastError);
             ImGui::TextWrapped("Reports in one batch share a read timestamp. Their individual arrival intervals are unknown; the window rate still counts each movement event.");
+            ImGui::Text("Raw capture (ordinary mouse messages disabled): %s", capture.legacySuppressed ? "On" : "Off");
         }
     }
     if (currentSession_.eventsA.empty() && currentSession_.eventsB.empty()) {
@@ -895,6 +910,10 @@ void App::TransitionTo(AppState newState) {
 }
 
 void App::StartRecording() {
+    if (hwnd_ && !inputEngine_->SetRawCapture(rawCaptureMode_)) {
+        statusMessage_ = "Could not change mouse capture mode. Recording was not started.";
+        return;
+    }
     deviceManager_->CancelAssignment();
     currentSession_ = RecordingSession{};
     enableYScaleB_ = false;
@@ -918,10 +937,14 @@ void App::StartRecording() {
 
     TransitionTo(AppState::Recording);
     UpdateRecordingCursor();
-    statusMessage_ = "Recording... Move both mice simultaneously, then click Stop";
+    statusMessage_ = inputEngine_->IsRawCapture() ?
+        "Recording... Move both mice, then click or press Esc to stop" :
+        "Recording... Move both mice simultaneously, then click Stop";
 }
 
 void App::StopRecording() {
+    if (state_ != AppState::Recording || stoppingRecording_) return;
+    stoppingRecording_ = true;
     LARGE_INTEGER timestamp;
     QueryPerformanceCounter(&timestamp);
     currentSession_.endTimestamp = timestamp.QuadPart;
@@ -934,6 +957,19 @@ void App::StopRecording() {
                                  currentSession_.eventsB.size());
 
     TransitionTo(AppState::Ready);
+    if (!inputEngine_->SetRawCapture(false))
+        statusMessage_ += " Could not restore mouse controls. Press Esc to retry or Alt+F4 to close.";
+    ReleaseRecordingCursor();
+    stoppingRecording_ = false;
+}
+
+void App::OnCaptureEscape() {
+    if (state_ == AppState::Recording) StopRecording();
+    else if (inputEngine_) inputEngine_->SetRawCapture(false);
+}
+
+void App::OnCaptureFocusLost() {
+    if (inputEngine_ && inputEngine_->IsRawCapture()) OnCaptureEscape();
     ReleaseRecordingCursor();
 }
 

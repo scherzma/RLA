@@ -75,6 +75,22 @@ struct InputEngineRegressionAccess {
     inline static std::vector<UINT> counts;
     inline static size_t nextBatch = 0;
     inline static DWORD forcedError = 0;
+    inline static DWORD registrationFlags = 0;
+    inline static bool failRegistration = false;
+    static BOOL WINAPI Register(PCRAWINPUTDEVICE devices, UINT count, UINT size) {
+        Check(count == 1 && size == sizeof(RAWINPUTDEVICE) && devices[0].usUsagePage == 1 && devices[0].usUsage == 2,
+              "Capture mode must only change mouse registration");
+        if (failRegistration) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+        registrationFlags = devices[0].dwFlags;
+        return TRUE;
+    }
+
+    static void EnableTestCapture(InputEngine& engine) {
+        engine.initialized_ = true;
+        engine.rawDeviceRegistrar_ = &Register;
+        failRegistration = false;
+        Check(engine.SetRawCapture(true), "Test raw capture must enable");
+    }
     static UINT WINAPI Read(PRAWINPUT output, PUINT size, UINT headerSize) {
         Check(headerSize == sizeof(RAWINPUTHEADER), "Buffered read header size is incorrect");
         if (forcedError) { SetLastError(forcedError); return UINT_MAX; }
@@ -152,6 +168,23 @@ struct InputEngineRegressionAccess {
         Check(engine->ProcessRawBatch(reinterpret_cast<BYTE*>(&raw), sizeof(raw), 1, 101), "Stopped input must drain");
         Check(engine->eventBuffer_.empty(), "Stopped input must not queue events");
         engine->running_ = true;
+        EnableTestCapture(*engine);
+        Check(registrationFlags == (RIDEV_INPUTSINK | RIDEV_NOLEGACY) && engine->GetCaptureDiagnostics().legacySuppressed,
+              "Raw capture must suppress only legacy mouse input and record the mode");
+        raw.data.mouse.lLastX = 0;
+        raw.data.mouse.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN;
+        Check(engine->ProcessRawBatch(reinterpret_cast<BYTE*>(&raw), sizeof(raw), 1, 102), "Stationary stop click must parse");
+        Check(engine->eventBuffer_.empty() && engine->TakeStopClick() && !engine->TakeStopClick(),
+              "A stop click must be delivered once without a movement event");
+        failRegistration = true;
+        Check(!engine->SetRawCapture(false) && engine->IsRawCapture(), "Failed restoration must not report success");
+        failRegistration = false;
+        Check(engine->SetRawCapture(false) && registrationFlags == RIDEV_INPUTSINK && !engine->IsRawCapture(),
+              "Stopping must restore ordinary mouse controls");
+        Check(engine->ProcessRawBatch(reinterpret_cast<BYTE*>(&raw), sizeof(raw), 1, 103) && !engine->TakeStopClick(),
+              "Ordinary UI clicks must not request a capture stop");
+        raw.data.mouse.lLastX = 7;
+        raw.data.mouse.usButtonFlags = 0;
         while (engine->eventBuffer_.push({nullptr, 0, 1, 0})) {}
         Check(engine->ProcessRawBatch(reinterpret_cast<BYTE*>(&raw), sizeof(raw), 1, 102), "A full ring must not block capture");
         Check(engine->GetCaptureDiagnostics().droppedEvents == 1, "Ring overflow must be counted");
@@ -159,6 +192,19 @@ struct InputEngineRegressionAccess {
         // Exercise actual registration, idle waiting and shutdown without a visible window.
         engine = std::make_unique<InputEngine>();
         Check(engine->Initialize() && engine->Start(), "Buffered input thread must initialize");
+        auto registeredFlags = []() {
+            RAWINPUTDEVICE devices[4]{};
+            UINT count = 4;
+            const UINT found = GetRegisteredRawInputDevices(devices, &count, sizeof(RAWINPUTDEVICE));
+            Check(found != UINT_MAX, "Windows registration query failed");
+            for (UINT i = 0; i < found; ++i)
+                if (devices[i].usUsagePage == 1 && devices[i].usUsage == 2) return devices[i].dwFlags;
+            throw std::runtime_error("Mouse registration not found");
+        };
+        Check(engine->SetRawCapture(true) && registeredFlags() == (RIDEV_INPUTSINK | RIDEV_NOLEGACY),
+              "Windows must accept raw-only mouse registration");
+        Check(engine->SetRawCapture(false) && registeredFlags() == RIDEV_INPUTSINK,
+              "Windows must restore ordinary mouse registration");
         Sleep(20);
         engine.reset();
         std::cout << "Buffered capture: 16000 reports preserved; resize, errors, overflow and shutdown passed.\n";
@@ -334,6 +380,15 @@ struct AppRegressionAccess {
         app.StopRecording();
         Check(app.currentSession_.eventsA.size() == 1 && app.currentSession_.eventsA[0].deltaX == 20,
               "Stopping must drain queued input and exclude events outside the recording");
+        app.StartRecording();
+        InputEngineRegressionAccess::EnableTestCapture(*app.inputEngine_);
+        app.OnCaptureFocusLost();
+        Check(app.state_ == AppState::Ready && !app.inputEngine_->IsRawCapture() && app.currentSession_.capture.legacySuppressed,
+              "Focus loss must stop raw recording, restore controls and retain capture mode metadata");
+        app.StartRecording();
+        InputEngineRegressionAccess::EnableTestCapture(*app.inputEngine_);
+        app.OnCaptureEscape();
+        Check(app.state_ == AppState::Ready && !app.inputEngine_->IsRawCapture(), "Esc must stop raw capture");
 
         app.inputEngine_->UpdateEventRates(100, 200);
         Sleep(120);
@@ -587,7 +642,7 @@ int main(int argc, char** argv) {
         session.startTimestamp = 100;
         session.endTimestamp = 110;
         session.qpcFrequency = 1000;
-        session.capture = {true, 16000, 12000, 64, 1, 2, ERROR_ACCESS_DENIED};
+        session.capture = {true, 16000, 12000, 64, 1, 2, ERROR_ACCESS_DENIED, true};
         session.eventsA = { {nullptr, 101, 300000, 400000},
                             {nullptr, 102, (std::numeric_limits<int32_t>::min)(), 0} };
         DataStore store;
@@ -596,7 +651,8 @@ int main(int argc, char** argv) {
         Check(loaded && loaded->capture.available && loaded->capture.packets == 16000 &&
               loaded->capture.groupedPackets == 12000 && loaded->capture.maxBatch == 64 &&
               loaded->capture.readErrors == 1 && loaded->capture.droppedEvents == 2 &&
-              loaded->capture.lastError == ERROR_ACCESS_DENIED, "Capture diagnostics must survive JSON round trip");
+              loaded->capture.lastError == ERROR_ACCESS_DENIED && loaded->capture.legacySuppressed,
+              "Capture diagnostics must survive JSON round trip");
         Check(loaded && loaded->eventsA.size() == 2 && loaded->eventsA[1].deltaX == session.eventsA[1].deltaX,
               "JSON round trip must preserve movement values");
         AppRegressionAccess::Run(*loaded);

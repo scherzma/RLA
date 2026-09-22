@@ -29,6 +29,8 @@ public:
     // Handle window resize
     void OnResize(int width, int height);
     void ReleaseRecordingCursor();
+    void OnCaptureEscape();
+    void OnCaptureFocusLost();
 
     // Check if app should quit
     bool ShouldQuit() const { return shouldQuit_; }
@@ -80,6 +82,8 @@ private:
     bool keepCursorInWindow_ = true;
     bool cursorConfined_ = false;
     RECT cursorClip_{};
+    bool rawCaptureMode_ = true;
+    bool stoppingRecording_ = false;
 
     // Recording data
     RecordingSession currentSession_;

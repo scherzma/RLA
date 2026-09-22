@@ -65,6 +65,7 @@ struct CaptureDiagnostics {
     uint64_t readErrors = 0;
     uint64_t droppedEvents = 0;
     uint32_t lastError = 0;
+    bool legacySuppressed = false; // Mode at the end of the recording.
 };
 
 struct RecordingSession {

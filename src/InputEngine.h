@@ -38,6 +38,9 @@ public:
     size_t GetBufferCapacity() const { return eventBuffer_.capacity(); }
     float GetBufferUtilization() const;
     CaptureDiagnostics GetCaptureDiagnostics() const;
+    bool SetRawCapture(bool enabled);
+    bool IsRawCapture() const { return rawCapture_.load(); }
+    bool TakeStopClick() { return stopClick_.exchange(false); }
 
     // Get event rate statistics (events per second)
     double GetEventRateA() const { return eventRateA_; }
@@ -59,7 +62,7 @@ private:
     bool ProcessRawBatch(const BYTE* bytes, size_t size, UINT count, int64_t timestamp);
 
     // Register/unregister raw input for the hidden window
-    bool RegisterRawInput(HWND hwnd);
+    bool RegisterRawInput(HWND hwnd, bool noLegacy = false);
     void UnregisterRawInput();
 
     // Hidden window for raw input (owned by input thread)
@@ -77,6 +80,8 @@ private:
     // Reused, 8-byte aligned storage. No allocation in the normal input path.
     std::vector<uint64_t> rawBuffer_ = std::vector<uint64_t>(8192);
     decltype(&GetRawInputBuffer) rawBufferReader_ = &GetRawInputBuffer;
+    decltype(&RegisterRawInputDevices) rawDeviceRegistrar_ = &RegisterRawInputDevices;
+    std::atomic<bool> rawCapture_{false}, stopClick_{false};
     std::atomic<uint64_t> packets_{0}, groupedPackets_{0}, maxBatch_{0};
     std::atomic<uint64_t> readErrors_{0}, droppedEvents_{0};
     std::atomic<uint32_t> lastError_{0};

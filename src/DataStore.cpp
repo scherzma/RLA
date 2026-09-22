@@ -132,7 +132,8 @@ bool DataStore::SaveToJson(const std::filesystem::path& path,
             j["capture"] = {{"method", "buffered"}, {"scope", "application"},
                 {"timestampMode", "batch-read-qpc"}, {"packets", c.packets},
                 {"groupedPackets", c.groupedPackets}, {"maxBatch", c.maxBatch},
-                {"readErrors", c.readErrors}, {"droppedEvents", c.droppedEvents}, {"lastError", c.lastError}};
+                {"readErrors", c.readErrors}, {"droppedEvents", c.droppedEvents}, {"lastError", c.lastError},
+                {"legacySuppressed", c.legacySuppressed}};
         }
 
         // Store events
@@ -200,7 +201,7 @@ std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::p
             session.capture = {true, ReadInteger<uint64_t>(c.at("packets")),
                 ReadInteger<uint64_t>(c.at("groupedPackets")), ReadInteger<uint64_t>(c.at("maxBatch")),
                 ReadInteger<uint64_t>(c.at("readErrors")), ReadInteger<uint64_t>(c.at("droppedEvents")),
-                ReadInteger<uint32_t>(c.at("lastError"))};
+                ReadInteger<uint32_t>(c.at("lastError")), c.value("legacySuppressed", false)};
         }
         auto readEvents = [](const json& source, std::vector<MouseEvent>& events) {
             if (!source.is_array()) throw std::runtime_error("Expected an event array");
