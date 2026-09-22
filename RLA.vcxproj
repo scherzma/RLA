@@ -158,6 +158,12 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="vcpkg.json" />
+    <None Include="assets\rla.ico" />
+    <None Include="assets\rla.svg" />
+    <None Include="assets\rla.png" />
+    <None Include="assets\generate_icon.py" />
+    <ClInclude Include="resource.h" />
+    <ResourceCompile Include="RLA.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

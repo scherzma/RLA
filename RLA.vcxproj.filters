@@ -65,5 +65,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="vcpkg.json" />
+    <None Include="assets\rla.ico"><Filter>Resource Files</Filter></None>
+    <None Include="assets\rla.svg"><Filter>Resource Files</Filter></None>
+    <None Include="assets\rla.png"><Filter>Resource Files</Filter></None>
+    <None Include="assets\generate_icon.py"><Filter>Resource Files</Filter></None>
+    <ClInclude Include="resource.h"><Filter>Header Files</Filter></ClInclude>
+    <ResourceCompile Include="RLA.rc"><Filter>Resource Files</Filter></ResourceCompile>
   </ItemGroup>
 </Project>
