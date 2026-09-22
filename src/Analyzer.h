@@ -24,6 +24,8 @@ struct ScaleFit {
 struct EventTiming {
     std::vector<double> timesMs, intervalsMs, instantHz;
     std::vector<double> meanIntervalsMs;
+    std::vector<double> shortIntervalsMs;
+    size_t longGapCount = 0;
     std::vector<double> rateTimesMs, ratesHz;
     size_t nonPositiveIntervals = 0;
     double medianMs = 0.0, p95Ms = 0.0, maxMs = 0.0;
@@ -47,7 +49,7 @@ public:
     static std::vector<MovementBin> BinMovement(const std::vector<MouseEvent>& events,
         int64_t startTimestamp, double frequency, double binMs, bool timeWeighted);
     static EventTiming BuildEventTiming(const std::vector<MouseEvent>& events,
-        int64_t startTimestamp, double frequency, double endMs, double windowMs);
+        int64_t startTimestamp, double frequency, double endMs, double windowMs, double longGapMs = 20.0);
 
     // Configuration
     void SetAccelerationThreshold(double threshold) { accelerationThreshold_ = threshold; }

@@ -328,7 +328,16 @@ void App::RenderTimingPanel() {
     ImGui::Checkbox("Show 1000 / interval Hz", &showInstantHz_);
     ImGui::SameLine();
     ImGui::Checkbox("Follow recording", &followTiming_);
-    ImGui::TextWrapped("Recorded movement events only. Idle gaps are included. These are application arrival times, not USB polling times.");
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::SliderFloat("Long gap", &timingGapMs_, 2.0f, 1000.0f, "> %.0f ms", ImGuiSliderFlags_Logarithmic)) {
+        timingDirty_ = true;
+        timingFitPending_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Show long gaps", &showTimingGaps_)) timingFitPending_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Reset timing view")) timingFitPending_ = true;
+    ImGui::TextWrapped("Recorded movement events only. Long gaps break the mean curve; the event rate still includes idle time.");
 
     const double now = ImGui::GetTime();
     if (timingDirty_ || (state_ == AppState::Recording && now - lastTimingUpdate_ >= 0.1)) {
@@ -340,15 +349,16 @@ void App::RenderTimingPanel() {
         }
         const double endMs = currentSession_.qpcFrequency > 0 ?
             (end - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency : 0;
+        timingEndMs_ = (std::max)(1.0, endMs);
         timingA_ = Analyzer::BuildEventTiming(currentSession_.eventsA, currentSession_.startTimestamp,
-            currentSession_.qpcFrequency, endMs, rateWindowMs_);
+            currentSession_.qpcFrequency, endMs, rateWindowMs_, timingGapMs_);
         timingB_ = Analyzer::BuildEventTiming(currentSession_.eventsB, currentSession_.startTimestamp,
-            currentSession_.qpcFrequency, endMs, rateWindowMs_);
+            currentSession_.qpcFrequency, endMs, rateWindowMs_, timingGapMs_);
         timingDirty_ = false;
         lastTimingUpdate_ = now;
     }
-    if (ImGui::BeginTable("Timing summary", 6, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg)) {
-        for (const char* label : { "Mouse", "Events", "Median ms", "P95 ms", "Max gap ms", "Intervals <= 0" })
+    if (ImGui::BeginTable("Timing summary", 7, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg)) {
+        for (const char* label : { "Mouse", "Events", "Median ms", "P95 ms", "Max gap ms", "Long gaps", "Intervals <= 0" })
             ImGui::TableSetupColumn(label);
         ImGui::TableHeadersRow();
         auto row = [](const char* label, size_t count, const EventTiming& data) {
@@ -359,28 +369,38 @@ void App::RenderTimingPanel() {
                 ImGui::TableNextColumn();
                 if (value > 0) ImGui::Text("%.3f", value); else ImGui::TextUnformatted("--");
             }
+            ImGui::TableNextColumn(); ImGui::Text("%zu", data.longGapCount);
             ImGui::TableNextColumn(); ImGui::Text("%zu", data.nonPositiveIntervals);
         };
         row("A (Reference)", currentSession_.eventsA.size(), timingA_);
         row("B (Test)", currentSession_.eventsB.size(), timingB_);
         ImGui::EndTable();
     }
-    ImGui::TextDisabled("Interval statistics use positive intervals. Rate = events in the window / window duration.");
+    ImGui::TextDisabled("Statistics include long gaps. Arrival times are measured in the application, not at the USB device.");
     if (currentSession_.eventsA.empty() && currentSession_.eventsB.empty()) {
         ImGui::TextUnformatted("Record movement or load a session to see event timing.");
         return;
     }
     const float height = (std::max)(260.0f, ImGui::GetContentRegionAvail().y - 35.0f);
     const ImPlotAxisFlags axisFlags = state_ == AppState::Recording && followTiming_ ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
+    auto setupAxes = [&](const char* yLabel) {
+        ImPlot::SetupAxes("Time (ms)", yLabel, ImPlotAxisFlags_None, axisFlags);
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0.0, timingEndMs_);
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0.0, HUGE_VAL);
+        if (timingFitPending_ || (state_ == AppState::Recording && followTiming_))
+            ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, timingEndMs_, ImPlotCond_Always);
+    };
     if (ImPlot::BeginSubplots("Event timing", 2, 1, ImVec2(-1, height), ImPlotSubplotFlags_LinkCols)) {
         const ImVec4 colorA(0.2f, 0.6f, 1.0f, 1.0f), colorB(1.0f, 0.4f, 0.2f, 1.0f);
+        if (timingFitPending_) ImPlot::SetNextAxisToFit(ImAxis_Y1);
         if (ImPlot::BeginPlot("Time between events")) {
-            ImPlot::SetupAxes("Time (ms)", "Interval (ms)", axisFlags, axisFlags);
-            auto plot = [](const char* label, const char* meanLabel, const EventTiming& data, ImVec4 color) {
+            setupAxes("Interval (ms)");
+            auto plot = [&](const char* label, const char* meanLabel, const EventTiming& data, ImVec4 color) {
                 if (data.timesMs.empty()) return;
                 ImVec4 faint = color; faint.w = 0.4f;
                 ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 2.0f, faint, 0.0f, faint);
-                ImPlot::PlotScatter(label, data.timesMs.data(), data.intervalsMs.data(), static_cast<int>(data.timesMs.size()));
+                const auto& intervals = showTimingGaps_ ? data.intervalsMs : data.shortIntervalsMs;
+                ImPlot::PlotScatter(label, data.timesMs.data(), intervals.data(), static_cast<int>(data.timesMs.size()));
                 ImPlot::SetNextLineStyle(color, 2.0f);
                 ImPlot::PlotLine(meanLabel, data.timesMs.data(), data.meanIntervalsMs.data(), static_cast<int>(data.timesMs.size()));
             };
@@ -388,8 +408,9 @@ void App::RenderTimingPanel() {
             plot("Mouse B - raw", "Mouse B - mean", timingB_, colorB);
             ImPlot::EndPlot();
         }
+        if (timingFitPending_) ImPlot::SetNextAxisToFit(ImAxis_Y1);
         if (ImPlot::BeginPlot("Movement event rate")) {
-            ImPlot::SetupAxes("Time (ms)", "Rate (Hz)", axisFlags, axisFlags);
+            setupAxes("Rate (Hz)");
             auto plot = [&](const char* label, const char* rawLabel, const EventTiming& data, ImVec4 color) {
                 if (showInstantHz_ && !data.timesMs.empty()) {
                     ImVec4 faint = color; faint.w = 0.35f;
@@ -406,6 +427,7 @@ void App::RenderTimingPanel() {
             ImPlot::EndPlot();
         }
         ImPlot::EndSubplots();
+        timingFitPending_ = false;
     }
 }
 
@@ -846,6 +868,7 @@ void App::StartRecording() {
     yScaleB_ = 1.0f;
     autoScaleMessage_.clear();
     timingDirty_ = true;
+    timingFitPending_ = true;
     analysisResult_ = AnalysisResult{};
     inputEngine_->ResetEventRates();
 
@@ -964,6 +987,7 @@ void App::RebuildPlotData() {
     yScaleB_ = 1.0f;
     autoScaleMessage_.clear();
     timingDirty_ = true;
+    timingFitPending_ = true;
     auto rebuild = [this](const std::vector<MouseEvent>& events,
                           std::vector<double>& times, std::vector<double>& values) {
         times.clear();

@@ -101,6 +101,10 @@ private:
 
     EventTiming timingA_, timingB_;
     float rateWindowMs_ = 100.0f;
+    float timingGapMs_ = 20.0f;
+    bool showTimingGaps_ = false;
+    bool timingFitPending_ = true;
+    double timingEndMs_ = 1.0;
     bool showInstantHz_ = false;
     bool followTiming_ = true;
     bool timingDirty_ = true;

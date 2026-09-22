@@ -165,10 +165,11 @@ ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
 }
 
 EventTiming Analyzer::BuildEventTiming(const std::vector<MouseEvent>& events,
-    int64_t startTimestamp, double frequency, double endMs, double windowMs) {
+    int64_t startTimestamp, double frequency, double endMs, double windowMs, double longGapMs) {
     EventTiming result;
     if (!std::isfinite(frequency) || frequency <= 0 || !std::isfinite(endMs) ||
-        endMs <= 0 || !std::isfinite(windowMs) || windowMs <= 0) return result;
+        endMs <= 0 || !std::isfinite(windowMs) || windowMs <= 0 ||
+        !std::isfinite(longGapMs) || longGapMs <= 0) return result;
     const double missing = std::numeric_limits<double>::quiet_NaN();
     std::vector<double> positive;
     positive.reserve(events.size());
@@ -176,10 +177,13 @@ EventTiming Analyzer::BuildEventTiming(const std::vector<MouseEvent>& events,
     result.intervalsMs.reserve(events.size());
     result.instantHz.reserve(events.size());
     result.meanIntervalsMs.reserve(events.size());
+    result.shortIntervalsMs.reserve(events.size());
     for (size_t i = 1; i < events.size(); ++i) {
         const double interval = (events[i].timestamp - events[i - 1].timestamp) * 1000.0 / frequency;
         result.timesMs.push_back((events[i].timestamp - startTimestamp) * 1000.0 / frequency);
         result.intervalsMs.push_back(interval >= 0 ? interval : missing);
+        result.shortIntervalsMs.push_back(interval >= 0 && interval <= longGapMs ? interval : missing);
+        if (interval > longGapMs) ++result.longGapCount;
         result.instantHz.push_back(interval > 0 ? 1000.0 / interval : missing);
         if (interval > 0) positive.push_back(interval);
         else ++result.nonPositiveIntervals;
@@ -187,7 +191,18 @@ EventTiming Analyzer::BuildEventTiming(const std::vector<MouseEvent>& events,
     size_t meanStart = 0, meanCount = 0;
     double meanSum = 0;
     for (size_t i = 0; i < result.timesMs.size(); ++i) {
-        if (result.intervalsMs[i] > 0) { meanSum += result.intervalsMs[i]; ++meanCount; }
+        const double interval = result.intervalsMs[i];
+        if (!std::isfinite(interval) || interval <= 0 || interval > longGapMs) {
+            // Keep long gaps out of the moving mean. Reset the averaging window
+            // and break the plotted line so it cannot bridge a stop/restart.
+            meanStart = i + 1;
+            meanCount = 0;
+            meanSum = 0;
+            result.meanIntervalsMs.push_back(missing);
+            continue;
+        }
+        meanSum += interval;
+        ++meanCount;
         while (meanStart < i && result.timesMs[meanStart] <= result.timesMs[i] - windowMs) {
             if (result.intervalsMs[meanStart] > 0) { meanSum -= result.intervalsMs[meanStart]; --meanCount; }
             ++meanStart;

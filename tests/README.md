@@ -10,6 +10,8 @@ Scale regression coverage also includes a small axis rotation in the dominant ma
 
 After building, run `./x64/Regression/Regression.exe <session.json> <manual-scale>` for a targeted check of a local recording. This prints the automatic scale and accepted section count, then requires agreement with the supplied manual scale within 1%. It does not copy the recording into the repository.
 
+Stop/restart checks use two 2 kHz movement segments separated by a one-second pause. They verify a break in the mean curve, immediate mean recovery, preserved raw gap statistics, zero window rates during idle time, and the configurable gap threshold. The UI tests inspect actual ImPlot axis ranges after showing/hiding gaps and resetting an excessively wide view.
+
 References used for the fixes:
 
 - [Microsoft: QueryPerformanceFrequency](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency). The counter frequency is fixed at system boot. Imported recordings must use their stored frequency.

@@ -7,9 +7,24 @@
 #include <stdexcept>
 #include <imgui.h>
 #include <implot.h>
+#include <implot_internal.h>
+#include <string_view>
 
 static void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+static RLA::RecordingSession PauseSession() {
+    RLA::RecordingSession session;
+    session.startTimestamp = 987654321;
+    session.qpcFrequency = 1000000;
+    session.endTimestamp = session.startTimestamp + 1450000;
+    for (int i = 0; i <= 200; ++i)
+        session.eventsA.push_back({nullptr, session.startTimestamp + i * 500, 1, 0});
+    for (int i = 0; i <= 200; ++i)
+        session.eventsA.push_back({nullptr, session.startTimestamp + 1100000 + i * 500, 1, 0});
+    session.eventsB = session.eventsA;
+    return session;
 }
 
 namespace RLA {
@@ -56,6 +71,48 @@ struct AppRegressionAccess {
                 ImGui::Render();
                 Check(ImGui::GetDrawData()->TotalVtxCount > 0, "Plot mode must produce UI geometry");
             }
+        }
+        app.currentSession_ = PauseSession();
+        app.RebuildPlotData();
+        app.plotMode_ = 2;
+        auto findPlot = [](const char* title) -> ImPlotPlot* {
+            auto& plots = ImPlot::GetCurrentContext()->Plots;
+            for (int i = 0; i < plots.GetBufSize(); ++i) {
+                auto* plot = plots.GetByIndex(i);
+                if (std::string_view(plot->GetTitle()) == title) return plot;
+            }
+            return nullptr;
+        };
+        // Check the actual axes after drawing, including hiding a gap that
+        // previously expanded the Y axis and resetting an excessively wide view.
+        for (int variant = 0; variant < 3; ++variant) {
+            app.showTimingGaps_ = variant == 0;
+            app.timingFitPending_ = true;
+            if (variant == 2) {
+                auto* plot = findPlot("Time between events");
+                Check(plot != nullptr, "Timing plot must exist");
+                plot->Axes[ImAxis_X1].Range = ImPlotRange(-13000, 23000);
+                plot->Axes[ImAxis_Y1].Range = ImPlotRange(-500, 1500);
+            }
+            for (int frame = 0; frame < 2; ++frame) {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowSize(ImVec2(1280, 1000));
+                ImGui::Begin("Regression UI");
+                app.RenderPlotPanel();
+                ImGui::End();
+                ImGui::Render();
+            }
+            const auto* intervals = findPlot("Time between events");
+            const auto* rates = findPlot("Movement event rate");
+            Check(intervals && rates, "Both timing plots must render");
+            Check(intervals->Axes[ImAxis_Y1].Range.Min >= 0 && rates->Axes[ImAxis_Y1].Range.Min >= 0,
+                  "Timing axes must not show negative intervals or rates");
+            for (const auto* plot : {intervals, rates}) {
+                Check(plot->Axes[ImAxis_X1].Range.Min >= 0 && plot->Axes[ImAxis_X1].Range.Max <= 1450.001,
+                      "Time axes must stay within the recording");
+            }
+            Check(variant == 0 ? intervals->Axes[ImAxis_Y1].Range.Max >= 1000 : intervals->Axes[ImAxis_Y1].Range.Max < 20,
+                  "Gap visibility and view reset must control interval axis fitting");
         }
         ImPlot::DestroyContext();
         ImGui::DestroyContext();
@@ -197,6 +254,39 @@ static void RunBinningChecks() {
     Check(Analyzer::BinMovement(events, start, 1000000, 0, true).empty(), "Zero bin width must be rejected");
 }
 
+static void RunTimingPauseChecks() {
+    using namespace RLA;
+    const auto session = PauseSession();
+    for (double window : {10.0, 100.0, 500.0}) {
+        const auto timing = Analyzer::BuildEventTiming(session.eventsA, session.startTimestamp,
+            session.qpcFrequency, 1450, window);
+        Check(timing.longGapCount == 1 && timing.maxMs == 1000,
+              "The pause must remain in raw statistics and the gap count");
+        Check(timing.intervalsMs[200] == 1000 && std::isnan(timing.shortIntervalsMs[200]) &&
+              std::isnan(timing.meanIntervalsMs[200]), "A pause must break the interval line and remain available as raw data");
+        Check(timing.meanIntervalsMs[201] == 0.5 && timing.meanIntervalsMs.back() == 0.5,
+              "The first regular report after a pause must restart the mean without the pause");
+        for (double value : timing.meanIntervalsMs)
+            Check(std::isnan(value) || std::abs(value - 0.5) < 1e-10, "The pause must not create a mean-interval ramp");
+        bool zeroInPause = false;
+        for (size_t i = 0; i < timing.ratesHz.size(); ++i) {
+            if (timing.rateTimesMs[i] > 650 && timing.rateTimesMs[i] < 1000 && timing.ratesHz[i] == 0)
+                zeroInPause = true;
+        }
+        Check(zeroInPause, "Window rates must still show zero during a pause");
+    }
+    const auto beforeResume = Analyzer::BuildEventTiming(
+        std::vector<MouseEvent>(session.eventsA.begin(), session.eventsA.begin() + 201),
+        session.startTimestamp, session.qpcFrequency, 1050, 100);
+    Check(beforeResume.ratesHz.back() == 0 && beforeResume.meanIntervalsMs.back() == 0.5,
+          "Live idle time must show zero rate without inventing intervals");
+    const auto allIntervals = Analyzer::BuildEventTiming(session.eventsA, session.startTimestamp,
+        session.qpcFrequency, 1450, 100, 2000);
+    Check(allIntervals.longGapCount == 0 && allIntervals.shortIntervalsMs[200] == 1000,
+          "The configurable threshold must control long-gap classification");
+    std::cout << "Stop/restart timing checks passed.\n";
+}
+
 static void RunComparisonChecks() {
     using namespace RLA;
     for (int rate : {1000, 8000}) {
@@ -308,6 +398,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         RunBinningChecks();
+        RunTimingPauseChecks();
         RunComparisonChecks();
         using namespace RLA;
         using json = nlohmann::json;

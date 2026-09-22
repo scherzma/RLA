@@ -21,10 +21,14 @@ The first report, duplicate timestamps, and reports after long gaps remain at ar
 
 The timing view includes:
 
-- Raw intervals and a moving mean over the selected window.
+- Raw interval points and a moving mean over the selected window. Long gaps are hidden from the interval plot by default.
 - Event rates over a 10–500 ms window, including zero rates during idle periods.
 - Optional per-interval rates, calculated as `1000 / interval_ms`.
-- Event counts, median and 95th-percentile intervals, maximum gaps, and counts of non-positive intervals. Interval statistics use positive intervals only.
+- Event counts, median and 95th-percentile intervals, maximum gaps, long-gap counts, and counts of non-positive intervals. Interval statistics use positive intervals only and retain long gaps.
+
+The timing view's **Long gap** setting defaults to 20 ms. Longer intervals break the mean curve and reset its averaging window. This prevents a pause from creating a ramp or distorting the mean after movement restarts. **Show long gaps** reveals the original large interval points. Long gaps can include pauses or delayed input; the threshold is a display choice, not a diagnosis. Rate calculations still include all elapsed time, so the rate falls to zero while no movement events arrive.
+
+**Reset timing view** fits both plots to the recording. Loading or starting a recording resets the view. Time axes stay within the recording, and interval/rate axes stay nonnegative.
 
 The two timing plots share their time axis. Statistics cover the full recording. The rate uses the number of events in `(time - window, time]`, divided by the window duration. Recordings shorter than the window use their available duration. Timing data refreshes at most ten times per second during recording.
 
