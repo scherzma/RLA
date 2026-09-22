@@ -1,0 +1,63 @@
+param([switch]$Elevated)
+$ErrorActionPreference = 'Stop'
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    if ($Elevated) { throw 'USB tracing requires administrator rights.' }
+    Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), '-Elevated')
+    exit
+}
+
+$repoPath = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$probePath = Join-Path $repoPath 'x64/RawInputProbe/RawInputProbe.exe'
+$resultsPath = Join-Path $env:LOCALAPPDATA 'RLA/RawInputProbe'
+$tracePath = Join-Path $resultsPath ('USB-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $PID)
+New-Item -ItemType Directory -Force -Path $tracePath | Out-Null
+$sessionName = 'RLA-USB-Probe-' + $PID
+$created = $false
+$running = $false
+$logPath = Join-Path $tracePath 'capture.log'
+function Invoke-Logman([string[]]$Arguments) {
+    $output = & "$env:SystemRoot/System32/logman.exe" @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    $output | Out-File -LiteralPath $logPath -Append
+    if ($exitCode -ne 0) { throw "logman failed ($exitCode): $($Arguments -join ' ')" }
+}
+try {
+    if (-not (Test-Path -LiteralPath $probePath)) { throw 'Build RawInputProbe first.' }
+    # HeadersBusTrace captures transfer metadata without USB data payloads.
+    Invoke-Logman @('create','trace','-n',$sessionName,'-o',(Join-Path $tracePath 'usb.etl'),'-f','bincirc','-max','256','-nb','64','256','-bs','128')
+    $created = $true
+    foreach ($provider in @('Microsoft-Windows-USB-USBXHCI','Microsoft-Windows-USB-UCX','Microsoft-Windows-USB-USBHUB3')) {
+        Invoke-Logman @('update','trace','-n',$sessionName,'-p',$provider,'0x41','5')
+    }
+    $oldFiles = @(Get-ChildItem -LiteralPath $resultsPath -Filter 'probe-*.json' | Select-Object -ExpandProperty FullName)
+    Invoke-Logman @('start','-n',$sessionName)
+    $running = $true
+    $startedUtc = [DateTime]::UtcNow
+    # This is the interactive test window, not a background service.
+    $probe = Start-Process -FilePath $probePath -PassThru
+    $result = $null
+    while (([DateTime]::UtcNow - $startedUtc).TotalSeconds -lt 120) {
+        $result = Get-ChildItem -LiteralPath $resultsPath -Filter "probe-*-$($probe.Id).json" |
+            Where-Object { $_.FullName -notin $oldFiles } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        if ($result -or $probe.HasExited) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    Invoke-Logman @('stop','-n',$sessionName)
+    $running = $false
+    if ($result) { Copy-Item -LiteralPath $result.FullName -Destination $tracePath }
+    [ordered]@{
+        traceStartedUtc=$startedUtc.ToString('o'); traceStoppedUtc=[DateTime]::UtcNow.ToString('o')
+        probePid=$probe.Id; resultFile=if($result){$result.Name}else{$null}
+        resultWrittenUtc=if($result){$result.LastWriteTimeUtc.ToString('o')}else{$null}
+        keywords='Default, HeadersBusTrace'; maximumMiB=256
+        note='USB driver events, not electrical bus measurements. Check ETW event loss before comparing counts. Stage alignment from result file time is approximate.'
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $tracePath 'capture.json') -Encoding utf8
+} catch {
+    $_ | Out-File -LiteralPath $logPath -Append
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show("USB trace failed. See $logPath`n$_", 'USB trace') | Out-Null
+} finally {
+    if ($running) { & "$env:SystemRoot/System32/logman.exe" stop -n $sessionName 2>&1 | Out-File -LiteralPath $logPath -Append }
+    if ($created) { & "$env:SystemRoot/System32/logman.exe" delete -n $sessionName 2>&1 | Out-File -LiteralPath $logPath -Append }
+}

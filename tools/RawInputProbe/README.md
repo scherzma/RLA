@@ -19,3 +19,13 @@ References:
 - [Microsoft: standard Raw Input processing](https://learn.microsoft.com/en-us/windows/win32/inputdev/using-raw-input)
 - [Microsoft: RAWMOUSE fields](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse)
 - [MousePlotter Windows recorder](https://github.com/XBAB-Tech/MousePlotter/blob/main/windows_gui/log.c): uses standard reads and optional USB tracing, selecting one mouse. This probe is independently written and does not include MousePlotter code.
+
+## USB trace comparison
+
+Close other recorders, then run `tools/RawInputProbe/TraceUsb.cmd`. Accept the Windows administrator prompt. The helper starts USB tracing and opens the probe. Assign A and B and run one test. It stops tracing when that probe saves a result, exits, or after 120 seconds. It leaves the probe window open.
+
+Files are saved under `%LOCALAPPDATA%/RLA/RawInputProbe/USB-<date>-<pid>/`. The helper copies the matching probe JSON beside the ETL. It uses a unique trace session, 256 MiB circular file limit, and only the USBXHCI, UCX, and USBHUB3 providers. `Default,HeadersBusTrace` records transfer metadata without USB data payloads. Other USB devices can appear in the metadata. Check event loss and endpoint identity before interpreting counts. The trace can add overhead; compare its Raw Input counts with the untraced baseline. Stage alignment from JSON file time is approximate, suitable only for broad stage comparisons.
+
+The helper stops and deletes its own trace session in `finally`. If the helper is forcibly terminated, use an administrator terminal to stop and delete the `RLA-USB-Probe-<pid>` session shown by `logman query`. This does not remove saved ETL files.
+
+See [Microsoft's USB capture instructions and keyword definitions](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/how-to-capture-a-usb-event-trace).
