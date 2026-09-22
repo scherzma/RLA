@@ -21,6 +21,7 @@ Key Features:
 *   **Gap Interpolation**: Automatically fills gaps in data with zero-velocity points to clearly visualize when a mouse has stopped moving.
 *   **Y-Axis Scaling**: Scale the "Test Mouse (B)" data to visually match the amplitude of the Reference Mouse, making it easier to compare shapes even if DPI settings differ.
 *   **Auto Scale B**: Fit the scale from sections with matching movement direction and shape. Reject weak or conflicting matches. Use common time bins for different event rates.
+*   **Time-weighted Bins**: Split movement across bin boundaries using report intervals. This reduces whole-report spikes while preserving signed counts. Original event totals remain available.
 *   **Event Timing**: Show raw and averaged intervals, rates over time, and interval statistics for both mice. Rates describe recorded movement events, not hardware USB polling.
 *   **Data Markers**: Toggle visible dots for individual data points to see the raw polling events.
 

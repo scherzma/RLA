@@ -109,6 +109,7 @@ private:
     // Time binning options (aggregates events into time windows)
     bool enableTimeBinning_ = false;
     float timeBinMs_ = 1.0f;  // Bin size in milliseconds
+    bool timeWeightedBins_ = true;
 
     // Gap interpolation options (fills gaps with zero-velocity points)
     bool enableGapInterpolation_ = true;  // Enabled by default
@@ -125,9 +126,6 @@ private:
     // Time binning helper functions
     void ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startTimestamp,
                           std::vector<double>& outTimes, std::vector<double>& outVelocities, double binMs);
-    // Time binning on already-extracted times/values arrays (sums values within each bin)
-    void ApplyTimeBinningOnArrays(const std::vector<double>& times, const std::vector<double>& values,
-                                  std::vector<double>& outTimes, std::vector<double>& outValues, double binMs);
 
     // Smoothing helper functions
     void ApplyMovingAverageSmoothing(const std::vector<double>& times, const std::vector<double>& values,

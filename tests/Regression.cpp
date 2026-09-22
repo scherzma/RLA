@@ -25,7 +25,7 @@ struct AppRegressionAccess {
         app.currentSession_ = session;
         app.RebuildPlotData();
         app.ApplyAutoScaleB();
-        Check(app.enableYScaleB_ && app.enableTimeBinning_ && app.timeBinMs_ == 2.0f,
+        Check(app.enableYScaleB_ && app.enableTimeBinning_ && app.timeWeightedBins_ && app.timeBinMs_ == 2.0f,
               "Auto scale must enable comparable time bins");
         Check(std::abs(app.yScaleB_ - 2.0f) < 0.08f, "Auto scale must reach the plot controls");
         const float previous = app.yScaleB_;
@@ -49,6 +49,7 @@ struct AppRegressionAccess {
                 ImGui::SetNextWindowSize(ImVec2(1280, 1000));
                 ImGui::Begin("Regression UI");
                 app.plotMode_ = mode;
+                app.timeWeightedBins_ = frame == 0;
                 app.showInstantHz_ = true;
                 app.RenderPlotPanel();
                 ImGui::End();
@@ -77,6 +78,7 @@ struct AppRegressionAccess {
               "Movement magnitude must not overflow");
 
         std::vector<double> times, values;
+        app.timeWeightedBins_ = false; // Original whole-event totals remain available.
         app.ApplyTimeBinning(session.eventsA, session.startTimestamp, times, values, 1.0);
         Check(times.size() == 2 && times[0] == 1.5 && times[1] == 2.5,
               "Time binning must use the saved frequency");
@@ -135,6 +137,64 @@ static RLA::RecordingSession ComparisonSession(int rateB = 1000, int delayMs = 4
         }
     }
     return session;
+}
+
+static void RunBinningChecks() {
+    using namespace RLA;
+    std::vector<MouseEvent> events;
+    constexpr int64_t start = 987654321;
+    for (int i = 0; i < 1000; ++i)
+        events.push_back({nullptr, start + i * 1000 + (i % 4 == 0 ? 100 : -100), 100, -50});
+    const auto raw = Analyzer::BinMovement(events, start, 1000000, 2.0, false);
+    const auto weighted = Analyzer::BinMovement(events, start, 1000000, 2.0, true);
+    auto rms = [](const std::vector<MovementBin>& bins, double target) {
+        double error = 0; size_t count = 0;
+        for (const auto& bin : bins) {
+            if (bin.index < 3 || bin.index > 490) continue;
+            error += (bin.x - target) * (bin.x - target); ++count;
+        }
+        Check(count > 0, "Binning must produce interior samples");
+        return std::sqrt(error / count);
+    };
+    const double rawError = rms(raw, 200), weightedError = rms(weighted, 200);
+    Check(rawError > 50 && weightedError < rawError * 0.25,
+          "Time weighting must reduce bin-boundary spikes in steady motion with arrival jitter");
+    std::cout << "Steady-motion bin RMS error: event totals=" << rawError
+              << ", time-weighted=" << weightedError << " counts (target 200).\n";
+
+    auto conserved = [&](const std::vector<MouseEvent>& input, double binMs, bool useTime) {
+        const auto bins = Analyzer::BinMovement(input, start, 1000000, binMs, useTime);
+        double x = 0, y = 0, expectedX = 0, expectedY = 0;
+        int64_t previous = -1;
+        for (const auto& event : input) { expectedX += event.deltaX; expectedY += event.deltaY; }
+        for (const auto& bin : bins) {
+            Check(bin.index > previous, "Binning must produce ordered, unique bins");
+            previous = bin.index; x += bin.x; y += bin.y;
+        }
+        Check(std::abs(x - expectedX) < 1e-7 && std::abs(y - expectedY) < 1e-7,
+              "Binning must preserve signed X/Y counts");
+        return bins;
+    };
+    for (double binMs : {0.1, 0.3, 1.0, 2.0, 7.5}) {
+        conserved(events, binMs, false);
+        conserved(events, binMs, true);
+    }
+    // Report period is not a divisor of the destination bin. Interior weighted
+    // bins must still show a constant rate, independent of report/bin phase.
+    for (size_t i = 0; i < events.size(); ++i) events[i].timestamp = start + 500 + i * 1001;
+    const auto drift = conserved(events, 2.0, true);
+    Check(rms(drift, 200000.0 / 1001) < 1e-8, "Clock drift must not cause whole-report spikes");
+
+    std::vector<MouseEvent> gaps = {{nullptr, start + 1000, 10, -10}, {nullptr, start + 2000, 20, -20},
+        {nullptr, start + 2000, -5, 5}, {nullptr, start + 3000, 10, -10},
+        {nullptr, start + 3600000000LL, 40, -40}, {nullptr, start + 3600001000LL, 10, -10}};
+    const auto sparse = conserved(gaps, 0.1, true);
+    Check(sparse.size() < 50, "Long idle gaps must not generate interpolated movement or large allocations");
+    for (const auto& bin : sparse)
+        Check(bin.index < 31 || bin.index >= 36000000, "Movement must not spread into the idle gap");
+    conserved({{nullptr, start, (std::numeric_limits<int32_t>::min)(), 0}}, 0.1, true);
+    Check(Analyzer::BinMovement(events, start, 0, 1, true).empty(), "Invalid binning clocks must be rejected");
+    Check(Analyzer::BinMovement(events, start, 1000000, 0, true).empty(), "Zero bin width must be rejected");
 }
 
 static void RunComparisonChecks() {
@@ -212,6 +272,7 @@ static void RunComparisonChecks() {
 
 int main() {
     try {
+        RunBinningChecks();
         RunComparisonChecks();
         using namespace RLA;
         using json = nlohmann::json;

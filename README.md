@@ -13,7 +13,11 @@ Auto Scale B checks direction and movement shape in separate sections. It exclud
 
 The fit uses common time bins, normally 2 ms. Slower event streams use larger bins. Each section spans at least 50 ms and eight bins. The fit checks offsets up to 10 ms in whole bins. These offsets only help find matching movement; plotted timestamps stay unchanged. The median scale from the largest consistent group is used. That group must contain more than half of the accepted estimates and at least three sections. This is a heuristic, not a device calibration or a latency measurement.
 
-Auto Scale B enables time binning so different event rates do not change the amplitude comparison. The multiplier applies to both movement magnitude and X/Y plots. Manual scaling remains available. Loading or starting a recording clears the previous scale. Saved events and CSV data retain their original values.
+Auto Scale B enables time-weighted binning so different event rates do not change the amplitude comparison. The multiplier applies to both movement magnitude and X/Y plots. Manual scaling remains available. Loading or starting a recording clears the previous scale. Saved events and CSV data retain their original values.
+
+**Weight by time** estimates uniform movement between adjacent reports. It splits each report's X/Y counts across the bins that overlap that interval. This reduces spikes caused by whole reports crossing bin boundaries. The plots and scale fit use the same binning code. Signed counts are conserved. Binned magnitudes are counts per bin; raw magnitudes are counts per event, so their heights can differ.
+
+The first report, duplicate timestamps, and reports after long gaps remain at arrival time. A long gap exceeds three times the median report interval or 50 ms. Movement is not spread across those gaps. Turn **Weight by time** off to inspect the original whole-event totals. Weighted bins are an estimate: arrival jitter can still affect them, and binning reduces time resolution. Use unbinned events and the timing view to inspect precise arrival times.
 
 The timing view includes:
 

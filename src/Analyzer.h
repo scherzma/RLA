@@ -6,6 +6,11 @@
 
 namespace RLA {
 
+struct MovementBin {
+    int64_t index = 0;
+    double x = 0.0, y = 0.0;
+};
+
 struct ScaleFit {
     bool valid = false;
     double scale = 1.0;
@@ -37,6 +42,10 @@ public:
 
     // Fits B to A from shared movement only. Does not change event timestamps.
     static ScaleFit FitScaleB(const RecordingSession& session);
+    // Sparse bins preserve signed counts. Weighted bins estimate uniform motion
+    // between nearby reports; first reports and reports after long gaps stay local.
+    static std::vector<MovementBin> BinMovement(const std::vector<MouseEvent>& events,
+        int64_t startTimestamp, double frequency, double binMs, bool timeWeighted);
     static EventTiming BuildEventTiming(const std::vector<MouseEvent>& events,
         int64_t startTimestamp, double frequency, double endMs, double windowMs);
 

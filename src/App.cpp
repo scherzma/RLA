@@ -289,8 +289,9 @@ void App::ApplyAutoScaleB() {
     enableYScaleB_ = true;
     // Equal time bins make count amplitudes comparable at different event rates.
     enableTimeBinning_ = true;
+    timeWeightedBins_ = true;
     timeBinMs_ = static_cast<float>(fit.binMs);
-    autoScaleMessage_ = std::format("Auto: x{:.3f}. Used {} of {} sections ({:.0f} ms each). Time bins: {:.0f} ms.",
+    autoScaleMessage_ = std::format("Auto: x{:.3f}. Used {} of {} sections ({:.0f} ms each). Weighted bins: {:.0f} ms.",
         fit.scale, fit.matchedWindows, fit.testedWindows, fit.windowMs, fit.binMs);
 }
 
@@ -315,7 +316,7 @@ void App::RenderScaleControls() {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         ImGui::SetTooltip("Stop recording, then fit B to A from matching direction and movement shape.\n"
             "Rejects idle, conflicting and weak matches. Needs at least three matching sections.\n"
-            "Enables common time bins (2 ms or longer for slower mice). Original counts and timestamps stay unchanged.");
+            "Enables time-weighted bins (2 ms or longer for slower mice). Original counts and timestamps stay unchanged.");
     }
     if (!autoScaleMessage_.empty()) ImGui::TextWrapped("%s", autoScaleMessage_.c_str());
 }
@@ -453,9 +454,13 @@ void App::RenderPlotPanel() {
             ImGui::SetNextItemWidth(100);
             ImGui::SliderFloat("##BinSize", &timeBinMs_, 0.1f, 50.0f, "%.1f ms", ImGuiSliderFlags_Logarithmic);
             ImGui::SameLine();
+            if (ImGui::Checkbox("Weight by time", &timeWeightedBins_)) autoScaleMessage_.clear();
+            ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Aggregates all events within each time window.\nReduces noise at high polling rates.");
+                ImGui::SetTooltip("Weight by time estimates uniform movement between nearby reports and splits counts across bin boundaries.\n"
+                    "First reports and reports after long gaps stay at arrival time. Turn off to sum whole events.\n"
+                    "Binning changes the plotted time resolution. Use raw events to inspect exact arrival timing.");
             }
         }
 
@@ -617,9 +622,13 @@ void App::RenderPlotPanel() {
             ImGui::SetNextItemWidth(100);
             ImGui::SliderFloat("##BinSizeXY", &timeBinMs_, 0.1f, 50.0f, "%.1f ms", ImGuiSliderFlags_Logarithmic);
             ImGui::SameLine();
+            if (ImGui::Checkbox("Weight by time", &timeWeightedBins_)) autoScaleMessage_.clear();
+            ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Aggregates all deltas within each time window (sums X and Y separately).");
+                ImGui::SetTooltip("Weight by time splits X/Y counts across bins using the interval between nearby reports.\n"
+                    "This estimates uniform movement within each interval. Turn off to sum whole events.\n"
+                    "Binning changes the plotted time resolution. Use raw events to inspect exact arrival timing.");
             }
         }
 
@@ -668,26 +677,37 @@ void App::RenderPlotPanel() {
                 rawX.reserve(events.size());
                 rawY.reserve(events.size());
 
-                for (const auto& event : events) {
-                    double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
-                    rawTimes.push_back(timeMs);
-                    rawX.push_back(static_cast<double>(event.deltaX));
-                    rawY.push_back(static_cast<double>(event.deltaY));
+                if (enableTimeBinning_) {
+                    for (const auto& bin : Analyzer::BinMovement(events, currentSession_.startTimestamp,
+                        currentSession_.qpcFrequency, timeBinMs_, timeWeightedBins_)) {
+                        rawTimes.push_back((bin.index + 0.5) * timeBinMs_);
+                        rawX.push_back(bin.x);
+                        rawY.push_back(bin.y);
+                    }
+                } else {
+                    for (const auto& event : events) {
+                        double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
+                        rawTimes.push_back(timeMs);
+                        rawX.push_back(static_cast<double>(event.deltaX));
+                        rawY.push_back(static_cast<double>(event.deltaY));
+                    }
                 }
 
-                // 1. Apply gap interpolation FIRST (on raw data)
+                // Fill missing bins only after resampling, as in magnitude mode.
                 if (enableGapInterpolation_ && !rawTimes.empty()) {
+                    const double threshold = enableTimeBinning_ ? (std::max)(gapThresholdMs_, timeBinMs_ * 1.5f) : gapThresholdMs_;
+                    const double step = enableTimeBinning_ ? timeBinMs_ : gapSampleIntervalMs_;
                     std::vector<double> interpTimes, interpX, interpY;
                     for (size_t i = 0; i < rawTimes.size(); ++i) {
                         if (i > 0) {
                             double gap = rawTimes[i] - rawTimes[i - 1];
-                            if (gap > gapThresholdMs_) {
-                                double t = rawTimes[i - 1] + gapSampleIntervalMs_;
-                                while (t < rawTimes[i] - gapSampleIntervalMs_ / 2.0) {
+                            if (gap > threshold) {
+                                double t = rawTimes[i - 1] + step;
+                                while (t < rawTimes[i] - step / 2.0) {
                                     interpTimes.push_back(t);
                                     interpX.push_back(0.0);
                                     interpY.push_back(0.0);
-                                    t += gapSampleIntervalMs_;
+                                    t += step;
                                 }
                             }
                         }
@@ -698,35 +718,6 @@ void App::RenderPlotPanel() {
                     rawTimes = std::move(interpTimes);
                     rawX = std::move(interpX);
                     rawY = std::move(interpY);
-                }
-
-                // 2. Apply time binning SECOND (after gap interpolation)
-                if (enableTimeBinning_ && !rawTimes.empty()) {
-                    std::vector<double> binnedTimes, binnedX, binnedY;
-                    size_t i = 0;
-                    while (i < rawTimes.size()) {
-                        double binStart = std::floor(rawTimes[i] / timeBinMs_) * timeBinMs_;
-                        double binEnd = binStart + timeBinMs_;
-
-                        double sumX = 0, sumY = 0;
-                        int count = 0;
-
-                        while (i < rawTimes.size() && rawTimes[i] < binEnd) {
-                            sumX += rawX[i];
-                            sumY += rawY[i];
-                            ++count;
-                            ++i;
-                        }
-
-                        if (count > 0) {
-                            binnedTimes.push_back(binStart + timeBinMs_ / 2.0);
-                            binnedX.push_back(sumX);
-                            binnedY.push_back(sumY);
-                        }
-                    }
-                    rawTimes = std::move(binnedTimes);
-                    rawX = std::move(binnedX);
-                    rawY = std::move(binnedY);
                 }
 
                 // 3. Apply smoothing LAST
@@ -1081,64 +1072,10 @@ void App::ApplyTimeBinning(const std::vector<MouseEvent>& events, int64_t startT
     outTimes.clear();
     outVelocities.clear();
 
-    if (events.empty() || binMs <= 0 || currentSession_.qpcFrequency <= 0) return;
-
-    size_t i = 0;
-    while (i < events.size()) {
-        // Calculate bin start time in ms
-        double eventTimeMs = (events[i].timestamp - startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
-        double binStart = std::floor(eventTimeMs / binMs) * binMs;
-        double binEnd = binStart + binMs;
-
-        // Accumulate deltas within this bin
-        int64_t sumDx = 0;
-        int64_t sumDy = 0;
-        int count = 0;
-
-        while (i < events.size()) {
-            double t = (events[i].timestamp - startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
-            if (t >= binEnd) break;
-
-            sumDx += events[i].deltaX;
-            sumDy += events[i].deltaY;
-            ++count;
-            ++i;
-        }
-
-        if (count > 0) {
-            // Use bin center as the time point
-            outTimes.push_back(binStart + binMs / 2.0);
-            // Calculate velocity from summed deltas
-            outVelocities.push_back(std::hypot(static_cast<double>(sumDx), static_cast<double>(sumDy)));
-        }
-    }
-}
-
-void App::ApplyTimeBinningOnArrays(const std::vector<double>& times, const std::vector<double>& values,
-                                   std::vector<double>& outTimes, std::vector<double>& outValues, double binMs) {
-    outTimes.clear();
-    outValues.clear();
-
-    if (times.empty() || binMs <= 0) return;
-
-    size_t i = 0;
-    while (i < times.size()) {
-        double binStart = std::floor(times[i] / binMs) * binMs;
-        double binEnd = binStart + binMs;
-
-        double sumValues = 0;
-        int count = 0;
-
-        while (i < times.size() && times[i] < binEnd) {
-            sumValues += values[i];
-            ++count;
-            ++i;
-        }
-
-        if (count > 0) {
-            outTimes.push_back(binStart + binMs / 2.0);
-            outValues.push_back(sumValues);  // Sum values within bin (appropriate for velocities and deltas)
-        }
+    for (const auto& bin : Analyzer::BinMovement(events, startTimestamp,
+        currentSession_.qpcFrequency, binMs, timeWeightedBins_)) {
+        outTimes.push_back((bin.index + 0.5) * binMs);
+        outVelocities.push_back(std::hypot(bin.x, bin.y));
     }
 }
 

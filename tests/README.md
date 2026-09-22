@@ -4,6 +4,8 @@ The checks cover imported plot data, saved timer frequency, movement magnitude, 
 
 Scale checks cover delay, different event rates (including 125 Hz and 8 kHz), independent movement, collision outliers, conflicting scale estimates, insufficient data, and clearing stale settings. Timing checks cover exact 8 kHz intervals, moving means, idle windows, duplicate timestamps, and interval statistics. All three plot modes generate ImGui/ImPlot frames without a GPU. These checks do not test real mouse timing or visible window interaction.
 
+Binning checks reproduce whole-report boundary spikes with a steady signal and timestamp jitter. They compare the error with time weighting, verify signed count conservation at fractional bin widths, and cover clock drift, duplicate timestamps, long idle gaps, and invalid parameters. Plot frames exercise both weighting settings.
+
 References used for the fixes:
 
 - [Microsoft: QueryPerformanceFrequency](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency). The counter frequency is fixed at system boot. Imported recordings must use their stored frequency.

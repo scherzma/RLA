@@ -7,28 +7,73 @@
 
 namespace RLA {
 
-ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
-    ScaleFit result;
-    result.message = "Not enough matching movement. Record both mice moving together for longer.";
-    if (!std::isfinite(session.qpcFrequency) || session.qpcFrequency <= 0 ||
-        session.eventsA.empty() || session.eventsB.empty()) return result;
-
-    auto medianInterval = [&](const std::vector<MouseEvent>& events) {
+namespace {
+    double MedianInterval(const std::vector<MouseEvent>& events, double frequency) {
         std::vector<double> intervals;
         intervals.reserve(events.size());
         for (size_t i = 1; i < events.size(); ++i) {
             if (events[i].timestamp > events[i - 1].timestamp)
-                intervals.push_back((events[i].timestamp - events[i - 1].timestamp) * 1000.0 / session.qpcFrequency);
+                intervals.push_back((events[i].timestamp - events[i - 1].timestamp) * 1000.0 / frequency);
         }
         if (intervals.empty()) return 0.0;
         auto middle = intervals.begin() + intervals.size() / 2;
         std::nth_element(intervals.begin(), middle, intervals.end());
         return *middle;
+    }
+}
+
+std::vector<MovementBin> Analyzer::BinMovement(const std::vector<MouseEvent>& events,
+    int64_t startTimestamp, double frequency, double binMs, bool timeWeighted) {
+    std::vector<MovementBin> bins;
+    if (events.empty() || startTimestamp < 0 || !std::isfinite(frequency) || frequency <= 0 ||
+        !std::isfinite(binMs) || binMs < 0.01) return bins;
+    int64_t previous = startTimestamp;
+    for (const auto& event : events) {
+        if (event.timestamp < previous) return bins;
+        previous = event.timestamp;
+    }
+    // Avoid spreading the next report across an idle gap. The first report and
+    // duplicate timestamps have no usable interval and remain at arrival time.
+    const double maxInterval = timeWeighted ? (std::min)(50.0, 3.0 * MedianInterval(events, frequency)) : 0.0;
+    auto add = [&](int64_t index, const MouseEvent& event, double fraction) {
+        if (fraction <= 0) return;
+        if (bins.empty() || bins.back().index != index) bins.push_back({index});
+        bins.back().x += event.deltaX * fraction;
+        bins.back().y += event.deltaY * fraction;
     };
+    for (size_t i = 0; i < events.size(); ++i) {
+        const auto& event = events[i];
+        const double end = (event.timestamp - startTimestamp) * 1000.0 / frequency;
+        // Keep bin indices within exact integer precision for boundary arithmetic.
+        if (!std::isfinite(end) || end / binMs >= 4503599627370496.0) return {};
+        const double begin = i ? (events[i - 1].timestamp - startTimestamp) * 1000.0 / frequency : end;
+        const double duration = end - begin;
+        if (!timeWeighted || duration <= 0 || duration > maxInterval) {
+            add(static_cast<int64_t>(std::floor(end / binMs)), event, 1.0);
+            continue;
+        }
+        // Integrate a constant rate over the overlap with each destination bin.
+        // Integer bin indices avoid a floating-point boundary loop that can stall.
+        const auto first = static_cast<int64_t>(std::floor(begin / binMs));
+        const auto last = static_cast<int64_t>(std::ceil(end / binMs)) - 1;
+        for (int64_t index = first; index <= last; ++index) {
+            const double overlap = (std::min)(end, (index + 1) * binMs) -
+                                   (std::max)(begin, index * binMs);
+            add(index, event, overlap / duration);
+        }
+    }
+    return bins;
+}
+
+ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
+    ScaleFit result;
+    result.message = "Not enough matching movement. Record both mice moving together for longer.";
+    if (!std::isfinite(session.qpcFrequency) || session.qpcFrequency <= 0 ||
+        session.eventsA.empty() || session.eventsB.empty()) return result;
     // At least one typical report from the slower mouse per bin. Round to a
     // whole millisecond so small timestamp jitter does not shift every bin.
     result.binMs = (std::max)(2.0, std::round((std::max)(
-        medianInterval(session.eventsA), medianInterval(session.eventsB))));
+        MedianInterval(session.eventsA, session.qpcFrequency), MedianInterval(session.eventsB, session.qpcFrequency))));
     if (result.binMs > 50.0) return result;
     const int windowBins = (std::max)(8, static_cast<int>(std::ceil(50.0 / result.binMs)));
     result.windowMs = windowBins * result.binMs;
@@ -38,13 +83,8 @@ ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
     using Bins = std::map<int64_t, Delta>;
     auto binEvents = [&](const std::vector<MouseEvent>& events) {
         Bins bins;
-        for (const auto& event : events) {
-            const double index = std::floor((event.timestamp - session.startTimestamp) *
-                1000.0 / session.qpcFrequency / result.binMs);
-            if (!std::isfinite(index) || index < 0 || index >= std::ldexp(1.0, 63) - 1024) continue;
-            auto& bin = bins[static_cast<int64_t>(index)];
-            bin.x += event.deltaX;
-            bin.y += event.deltaY;
+        for (const auto& bin : BinMovement(events, session.startTimestamp, session.qpcFrequency, result.binMs, true)) {
+            bins[bin.index] = {bin.x, bin.y};
         }
         return bins;
     };
