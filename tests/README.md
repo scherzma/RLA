@@ -12,6 +12,8 @@ After building, run `./x64/Regression/Regression.exe <session.json> <manual-scal
 
 Stop/restart checks use two 2 kHz movement segments separated by a one-second pause. They verify a break in the mean curve, immediate mean recovery, preserved raw gap statistics, zero window rates during idle time, and the configurable gap threshold. The UI tests inspect actual ImPlot axis ranges after showing/hiding gaps and resetting an excessively wide view.
 
+View tests verify that manual panning below zero remains intact, hiding settings and summary increases graph height, and both single-graph modes use the available height.
+
 References used for the fixes:
 
 - [Microsoft: QueryPerformanceFrequency](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency). The counter frequency is fixed at system boot. Imported recordings must use their stored frequency.

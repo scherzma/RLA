@@ -77,7 +77,9 @@ struct AppRegressionAccess {
         app.plotMode_ = 2;
         auto findPlot = [](const char* title) -> ImPlotPlot* {
             auto& plots = ImPlot::GetCurrentContext()->Plots;
-            for (int i = 0; i < plots.GetBufSize(); ++i) {
+            // A single-rate view has a new cell ID. Prefer its newly created
+            // plot over the inactive rate plot from the two-row layout.
+            for (int i = plots.GetBufSize() - 1; i >= 0; --i) {
                 auto* plot = plots.GetByIndex(i);
                 if (std::string_view(plot->GetTitle()) == title) return plot;
             }
@@ -105,14 +107,52 @@ struct AppRegressionAccess {
             const auto* intervals = findPlot("Time between events");
             const auto* rates = findPlot("Movement event rate");
             Check(intervals && rates, "Both timing plots must render");
-            Check(intervals->Axes[ImAxis_Y1].Range.Min >= 0 && rates->Axes[ImAxis_Y1].Range.Min >= 0,
-                  "Timing axes must not show negative intervals or rates");
             for (const auto* plot : {intervals, rates}) {
-                Check(plot->Axes[ImAxis_X1].Range.Min >= 0 && plot->Axes[ImAxis_X1].Range.Max <= 1450.001,
-                      "Time axes must stay within the recording");
+                Check(plot->Axes[ImAxis_X1].Range.Min < 0 && plot->Axes[ImAxis_X1].Range.Max > 1450,
+                      "Reset view must leave space around the recording");
             }
             Check(variant == 0 ? intervals->Axes[ImAxis_Y1].Range.Max >= 1000 : intervals->Axes[ImAxis_Y1].Range.Max < 20,
                   "Gap visibility and view reset must control interval axis fitting");
+        }
+        auto drawTiming = [&]() {
+            for (int frame = 0; frame < 2; ++frame) {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowSize(ImVec2(1280, 1000));
+                ImGui::Begin("Regression UI");
+                app.RenderPlotPanel();
+                ImGui::End();
+                ImGui::Render();
+            }
+        };
+        // User panning must remain free on both axes, including below zero.
+        for (const char* title : {"Time between events", "Movement event rate"}) {
+            auto* plot = findPlot(title);
+            plot->Axes[ImAxis_X1].SetRange(-500, 1800);
+            plot->Axes[ImAxis_X1].PushLinks();
+            plot->Axes[ImAxis_Y1].SetRange(-100, 2200);
+        }
+        drawTiming();
+        for (const char* title : {"Time between events", "Movement event rate"}) {
+            const auto* plot = findPlot(title);
+            Check(plot->Axes[ImAxis_X1].Range.Min == -500 && plot->Axes[ImAxis_Y1].Range.Min == -100,
+                  "Rendering must preserve manual panning below zero");
+        }
+        const float compactHeight = findPlot("Time between events")->PlotRect.GetHeight();
+        app.showTimingSettings_ = app.showTimingSummary_ = true;
+        drawTiming();
+        Check(findPlot("Time between events")->PlotRect.GetHeight() < compactHeight - 30,
+              "Hiding settings and summary must return space to the graphs");
+        app.showTimingSettings_ = app.showTimingSummary_ = false;
+        for (int graph : {1, 2, 0}) {
+            app.timingGraph_ = graph;
+            app.timingFitPending_ = true;
+            drawTiming();
+            if (graph != 0) {
+                const auto* plot = findPlot(graph == 1 ? "Time between events" : "Movement event rate");
+                std::cout << "Timing graph " << graph << ": compact=" << compactHeight << ", single=" << plot->PlotRect.GetHeight() << '\n';
+                Check(plot->PlotRect.GetHeight() > compactHeight * 1.5f,
+                      "A single timing graph must use the available height");
+            }
         }
         ImPlot::DestroyContext();
         ImGui::DestroyContext();

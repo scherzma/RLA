@@ -101,6 +101,9 @@ private:
 
     EventTiming timingA_, timingB_;
     float rateWindowMs_ = 100.0f;
+    int timingGraph_ = 0; // Both, intervals only, rate only.
+    bool showTimingSettings_ = false;
+    bool showTimingSummary_ = false;
     float timingGapMs_ = 20.0f;
     bool showTimingGaps_ = false;
     bool timingFitPending_ = true;

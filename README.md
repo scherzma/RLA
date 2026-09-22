@@ -28,7 +28,9 @@ The timing view includes:
 
 The timing view's **Long gap** setting defaults to 20 ms. Longer intervals break the mean curve and reset its averaging window. This prevents a pause from creating a ramp or distorting the mean after movement restarts. **Show long gaps** reveals the original large interval points. Long gaps can include pauses or delayed input; the threshold is a display choice, not a diagnosis. Rate calculations still include all elapsed time, so the rate falls to zero while no movement events arrive.
 
-**Reset timing view** fits both plots to the recording. Loading or starting a recording resets the view. Time axes stay within the recording, and interval/rate axes stay nonnegative.
+**Reset timing view** fits the plots to the recording with a small time margin. Loading or starting a recording resets the view. Both axes allow free panning beyond the data, including below zero. Turn off **Follow recording** to adjust the view freely during capture.
+
+The timing toolbar offers **Both graphs**, **Intervals only**, and **Hz only**. A single graph uses the full available plot height. In the two-graph view, drag the divider to adjust their relative heights. **Settings** and **Summary** start hidden and can be opened when needed. **Device assignment** also collapses; recording controls remain available.
 
 The two timing plots share their time axis. Statistics cover the full recording. The rate uses the number of events in `(time - window, time]`, divided by the window duration. Recordings shorter than the window use their available duration. Timing data refreshes at most ten times per second during recording.
 
