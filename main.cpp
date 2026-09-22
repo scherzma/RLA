@@ -12,6 +12,7 @@
 #include <imgui.h>
 #include "src/App.h"
 #include "resource.h"
+#include "src/WindowMessages.h"
 
 // Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -26,6 +27,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     switch (msg) {
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) == WA_INACTIVE && g_app) g_app->ReleaseRecordingCursor();
+            break;
+
+        case WM_ENTERSIZEMOVE:
+            if (g_app) g_app->ReleaseRecordingCursor();
+            break;
+
         // Note: WM_INPUT is now handled by InputEngine's dedicated thread
         // for accurate timestamps independent of VSync
 
@@ -126,16 +135,14 @@ int WINAPI WinMain(
     // Main message loop
     MSG msg{};
     while (msg.message != WM_QUIT) {
-        // Process all pending messages
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-
-        if (msg.message == WM_QUIT) {
+        if (!RLA::PumpWindowMessages(msg,
+            [](MSG& message, UINT first, UINT last) {
+                return PeekMessageW(&message, nullptr, first, last, PM_REMOVE) != FALSE;
+            },
+            [](MSG& message) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            })) {
             break;
         }
 

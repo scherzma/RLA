@@ -44,6 +44,10 @@ Windows does not supply a device timestamp in `RAWINPUT`. All reports returned i
 
 **Summary** shows capture totals since application start: mouse reports, reports read in groups, largest batch, application queue drops, and API/packet errors. These totals include all received mice and activity outside the recording. They are saved as optional `capture` metadata and frozen when recording stops. Older JSON sessions remain supported. Use a new recording to check high-rate capture; synthetic regression checks cannot confirm physical USB performance.
 
+**Keep cursor in window** is on by default. During recording, it confines the pointer to RLA's client area while RLA is the foreground window. Stop recording, switch apps, or turn the option off to release it. This keeps the pointer over the same application while comparing mice. It does not change the raw movement counts. Recordings taken outside RLA can have different observed event rates even when RLA retains focus; cursor confinement controls that variable, but does not prove a USB or driver cause.
+
+The UI message loop processes ordinary client and title-bar cursor movement at most once per frame. Buttons, wheels, keys and window messages continue to be processed. Raw mouse reports stay on the separate capture thread. This avoids an unbounded UI drain under continuous mouse movement. See [Godot's explanation of legacy motion processing at high polling rates](https://godotengine.org/article/fixing-high-polling-rate-mice-on-windows/).
+
 ## Build and checks
 
 Open `RLA.slnx` in Visual Studio with the C++ desktop tools. Build **Release / x64**. The project uses vcpkg for ImGui, ImPlot, and nlohmann JSON.

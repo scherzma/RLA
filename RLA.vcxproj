@@ -155,6 +155,7 @@
     <ClInclude Include="src\Renderer.h" />
     <ClInclude Include="src\RingBuffer.h" />
     <ClInclude Include="src\Types.h" />
+    <ClInclude Include="src\WindowMessages.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="vcpkg.json" />

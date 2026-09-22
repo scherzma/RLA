@@ -19,9 +19,10 @@ App::App() {
     qpcFrequency_ = freq.QuadPart;
 }
 
-App::~App() = default;
+App::~App() { ReleaseRecordingCursor(); }
 
 bool App::Initialize(HWND hwnd, int width, int height) {
+    hwnd_ = hwnd;
     // Create components
     renderer_ = std::make_unique<Renderer>();
     inputEngine_ = std::make_unique<InputEngine>();
@@ -48,6 +49,7 @@ bool App::Initialize(HWND hwnd, int width, int height) {
 }
 
 void App::Update() {
+    UpdateRecordingCursor();
     // Process input events
     inputEngine_->ProcessEvents([this](const MouseEvent& event) {
         // Handle device assignment
@@ -278,6 +280,9 @@ void App::RenderControlPanel() {
     ImGui::SameLine();
     float utilization = inputEngine_->GetBufferUtilization() * 100.0f;
     ImGui::Text("Buffer: %.1f%%", utilization);
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Keep cursor in window", &keepCursorInWindow_)) UpdateRecordingCursor();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keeps the pointer over RLA while recording. Releases it on stop or focus loss.\nThis controls which window receives ordinary cursor input; raw movement counts are unchanged.");
 }
 
 void App::ApplyAutoScaleB() {
@@ -912,6 +917,7 @@ void App::StartRecording() {
     liveVelocitiesB_.clear();
 
     TransitionTo(AppState::Recording);
+    UpdateRecordingCursor();
     statusMessage_ = "Recording... Move both mice simultaneously, then click Stop";
 }
 
@@ -928,6 +934,34 @@ void App::StopRecording() {
                                  currentSession_.eventsB.size());
 
     TransitionTo(AppState::Ready);
+    ReleaseRecordingCursor();
+}
+
+void App::UpdateRecordingCursor() {
+    if (!hwnd_ || state_ != AppState::Recording || !keepCursorInWindow_ || GetForegroundWindow() != hwnd_) {
+        ReleaseRecordingCursor();
+        return;
+    }
+    RECT client{};
+    POINT origin{};
+    if (!GetClientRect(hwnd_, &client) || !ClientToScreen(hwnd_, &origin) ||
+        client.right <= client.left || client.bottom <= client.top) {
+        ReleaseRecordingCursor();
+        return;
+    }
+    OffsetRect(&client, origin.x, origin.y);
+    if ((!cursorConfined_ || !EqualRect(&client, &cursorClip_)) && ClipCursor(&client)) {
+        cursorClip_ = client;
+        cursorConfined_ = true;
+    }
+}
+
+void App::ReleaseRecordingCursor() {
+    if (!cursorConfined_) return;
+    RECT current{};
+    // Do not remove a newer restriction installed by another application.
+    if (GetClipCursor(&current) && EqualRect(&current, &cursorClip_)) ClipCursor(nullptr);
+    cursorConfined_ = false;
 }
 
 void App::OnResize(int width, int height) {

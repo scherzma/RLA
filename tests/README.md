@@ -20,3 +20,5 @@ References used for the fixes:
 - [nlohmann JSON: Number handling](https://json.nlohmann.me/features/types/number_handling/). Numeric conversions can change the value. The loader checks integer types and ranges before conversion.
 
 Buffered-input checks simulate 16,000 separate reports from two mice. They check report order, device identity, unchanged counts, shared batch timestamps, buffer growth, empty queues, invalid packets, read failures, queue overflow, and stopped input. A real message-only window checks registration and thread shutdown. JSON round trips preserve optional capture diagnostics; negative counters are rejected. These tests do not emulate USB hardware or prove real 8 kHz performance.
+
+UI message-loop checks simulate continuously available client and title-bar cursor movement. They require a bounded drain, delivery of button/key/wheel/resize messages, continued movement on the next frame, and immediate handling of quit. Cursor confinement requires a foreground RLA window; headless recording checks must leave the system cursor unrestricted. Actual focus changes and cursor confinement require a manual window check.

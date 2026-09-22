@@ -1,4 +1,5 @@
 #include "src/App.h"
+#include "src/WindowMessages.h"
 #include <nlohmann/json.hpp>
 #include <cmath>
 #include <fstream>
@@ -14,6 +15,41 @@
 
 static void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+static void RunWindowMessageChecks() {
+    // Simulate continuously available cursor motion. An unfiltered drain
+    // would never reach rendering; only one of each motion type may dispatch.
+    std::vector<UINT> queued = {WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_SIZE};
+    unsigned clientMoves = 0, frameMoves = 0, otherMessages = 0, calls = 0;
+    MSG message{};
+    auto peek = [&](MSG& out, UINT first, UINT last) {
+        Check(++calls < 100, "Cursor motion must not keep the UI drain running");
+        for (UINT motion : {UINT(WM_MOUSEMOVE), UINT(WM_NCMOUSEMOVE)}) {
+            if (motion >= first && motion <= last) { out.message = motion; return true; }
+        }
+        for (auto it = queued.begin(); it != queued.end(); ++it) {
+            if (*it >= first && *it <= last) {
+                out.message = *it; queued.erase(it); return true;
+            }
+        }
+        return false;
+    };
+    auto dispatch = [&](MSG& msg) {
+        if (msg.message == WM_MOUSEMOVE) ++clientMoves;
+        else if (msg.message == WM_NCMOUSEMOVE) ++frameMoves;
+        else ++otherMessages;
+    };
+    Check(RLA::PumpWindowMessages(message, peek, dispatch), "Motion must not stop the app");
+    Check(clientMoves == 1 && frameMoves == 1 && otherMessages == 5 && queued.empty(),
+          "Motion must be bounded while clicks, keys, wheel and resize still dispatch");
+    calls = 0;
+    Check(RLA::PumpWindowMessages(message, peek, dispatch) && clientMoves == 2 && frameMoves == 2,
+          "Cursor motion must resume on the next frame");
+    Check(!RLA::PumpWindowMessages(message,
+        [](MSG& msg, UINT, UINT) { msg.message = WM_QUIT; return true; },
+        [](MSG&) { Check(false, "WM_QUIT must not dispatch"); }), "Quit must stop the message pump");
+    std::cout << "UI message checks passed with continuous cursor motion.\n";
 }
 
 static RLA::RecordingSession PauseSession() {
@@ -289,6 +325,8 @@ struct AppRegressionAccess {
               "Recording must reset previous results and events");
         Check(app.currentSession_.qpcFrequency == 10000000,
               "A new recording must use the local clock");
+        Check(app.keepCursorInWindow_ && !app.cursorConfined_,
+              "Cursor confinement must default on but must not apply without an active app window");
         const auto start = app.currentSession_.startTimestamp;
         InputEngineRegressionAccess::Push(*app.inputEngine_, {mouse, start - 1, 10, 0});
         InputEngineRegressionAccess::Push(*app.inputEngine_, {mouse, start, 20, 0});
@@ -533,6 +571,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         RLA::InputEngineRegressionAccess::Run();
+        RunWindowMessageChecks();
         RunBinningChecks();
         RunTimingPauseChecks();
         RunComparisonChecks();

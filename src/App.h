@@ -28,6 +28,7 @@ public:
 
     // Handle window resize
     void OnResize(int width, int height);
+    void ReleaseRecordingCursor();
 
     // Check if app should quit
     bool ShouldQuit() const { return shouldQuit_; }
@@ -54,6 +55,7 @@ private:
     // Recording control
     void StartRecording();
     void StopRecording();
+    void UpdateRecordingCursor();
 
     // File operations
     void SaveSession();
@@ -74,6 +76,10 @@ private:
     // State
     AppState state_ = AppState::Idle;
     bool shouldQuit_ = false;
+    HWND hwnd_ = nullptr;
+    bool keepCursorInWindow_ = true;
+    bool cursorConfined_ = false;
+    RECT cursorClip_{};
 
     // Recording data
     RecordingSession currentSession_;
