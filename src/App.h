@@ -88,6 +88,7 @@ private:
 
     // Helper to get device display name
     std::string GetMouseDisplayName(const MouseDevice* device) const;
+    std::string GetRecordingMouseName(bool mouseB) const;
 
     // Components
     std::unique_ptr<Renderer> renderer_;

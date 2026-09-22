@@ -698,8 +698,8 @@ void App::RenderTimingPanel() {
                 ImGui::TableNextColumn(); ImGui::Text("%zu", data.longGapCount);
                 ImGui::TableNextColumn(); ImGui::Text("%zu", data.nonPositiveIntervals);
             };
-            row("A (Reference)", currentSession_.eventsA.size(), timingA_);
-            row("B (Test)", currentSession_.eventsB.size(), timingB_);
+            row(GetRecordingMouseName(false).c_str(), currentSession_.eventsA.size(), timingA_);
+            row(GetRecordingMouseName(true).c_str(), currentSession_.eventsB.size(), timingB_);
             ImGui::EndTable();
         }
         ImGui::TextDisabled("Statistics include long gaps. Arrival times are measured in the application, not at the USB device.");
@@ -737,15 +737,15 @@ void App::RenderTimingPanel() {
             if (ImPlot::BeginPlot("Time between events")) {
                 setupAxes("Interval (ms)");
                 // Draw both point clouds first so neither can cover the mean curves.
-                scatter("Mouse A - raw", timingA_, showTimingGaps_ ? timingA_.intervalsMs : timingA_.shortIntervalsMs, colorA);
-                scatter("Mouse B - raw", timingB_, showTimingGaps_ ? timingB_.intervalsMs : timingB_.shortIntervalsMs, colorB);
+                scatter((GetRecordingMouseName(false)+" - raw###mouse-A-raw").c_str(), timingA_, showTimingGaps_ ? timingA_.intervalsMs : timingA_.shortIntervalsMs, colorA);
+                scatter((GetRecordingMouseName(true)+" - raw###mouse-B-raw").c_str(), timingB_, showTimingGaps_ ? timingB_.intervalsMs : timingB_.shortIntervalsMs, colorB);
                 auto plot = [&](const char* meanLabel, const EventTiming& data, ImVec4 color) {
                     if (data.timesMs.empty()) return;
                     ImPlot::SetNextLineStyle(color, 3.0f);
                     ImPlot::PlotLine(meanLabel, data.timesMs.data(), data.meanIntervalsMs.data(), static_cast<int>(data.timesMs.size()));
                 };
-                plot("Mouse A - mean", timingA_, meanA);
-                plot("Mouse B - mean", timingB_, meanB);
+                plot((GetRecordingMouseName(false)+" - mean###mouse-A-mean").c_str(), timingA_, meanA);
+                plot((GetRecordingMouseName(true)+" - mean###mouse-B-mean").c_str(), timingB_, meanB);
                 ImPlot::EndPlot();
             }
         }
@@ -754,8 +754,8 @@ void App::RenderTimingPanel() {
             if (ImPlot::BeginPlot("Movement event rate")) {
                 setupAxes("Rate (Hz)");
                 if (showInstantHz_) {
-                    scatter("Mouse A - interval Hz", timingA_, timingA_.instantHz, colorA);
-                    scatter("Mouse B - interval Hz", timingB_, timingB_.instantHz, colorB);
+                    scatter((GetRecordingMouseName(false)+" - interval Hz###mouse-A-interval Hz").c_str(), timingA_, timingA_.instantHz, colorA);
+                    scatter((GetRecordingMouseName(true)+" - interval Hz###mouse-B-interval Hz").c_str(), timingB_, timingB_.instantHz, colorB);
                 }
                 auto plot = [&](const char* label, const EventTiming& data, ImVec4 color) {
                     if (!data.rateTimesMs.empty()) {
@@ -763,8 +763,8 @@ void App::RenderTimingPanel() {
                         ImPlot::PlotLine(label, data.rateTimesMs.data(), data.ratesHz.data(), static_cast<int>(data.rateTimesMs.size()));
                     }
                 };
-                plot("Mouse A - window rate", timingA_, meanA);
-                plot("Mouse B - window rate", timingB_, meanB);
+                plot((GetRecordingMouseName(false)+" - window rate###mouse-A-window rate").c_str(), timingA_, meanA);
+                plot((GetRecordingMouseName(true)+" - window rate###mouse-B-window rate").c_str(), timingB_, meanB);
                 ImPlot::EndPlot();
             }
         }
@@ -906,7 +906,7 @@ void App::RenderPlotPanel() {
                 const ImVec4 color=mouseB ? ImVec4(1.0f,0.4f,0.2f,1.0f) : ImVec4(0.2f,0.6f,1.0f,1.0f);
                 ImPlot::SetNextLineStyle(color,2.0f);
                 if (showDataPointMarkers_) ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle,markerSize_,color,1.0f);
-                ImPlot::PlotLine(mouseB ? "Mouse B (Test)" : "Mouse A (Reference)",curve.times.data(),curve.values.data(),static_cast<int>(curve.times.size()));
+                ImPlot::PlotLine((GetRecordingMouseName(mouseB)+(mouseB ? "###movement-B" : "###movement-A")).c_str(),curve.times.data(),curve.values.data(),static_cast<int>(curve.times.size()));
             }
 
             if ((highlightLatencyMatch_ || showAllLatencyMarkers_) && latencyFit_.valid) {
@@ -1093,13 +1093,13 @@ void App::RenderPlotPanel() {
                     if (showDataPointMarkers_) {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(0.2f, 0.6f, 1.0f, 1.0f), 1.0f);
                     }
-                    ImPlot::PlotLine("Mouse A - X", timesA.data(), deltasXA.data(), static_cast<int>(timesA.size()));
+                    ImPlot::PlotLine((GetRecordingMouseName(false)+" - X###mouse-A-X").c_str(), timesA.data(), deltasXA.data(), static_cast<int>(timesA.size()));
 
                     ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.9f, 0.9f, 1.0f), 1.5f);
                     if (showDataPointMarkers_) {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(0.2f, 0.9f, 0.9f, 1.0f), 1.0f);
                     }
-                    ImPlot::PlotLine("Mouse A - Y", timesA.data(), deltasYA.data(), static_cast<int>(timesA.size()));
+                    ImPlot::PlotLine((GetRecordingMouseName(false)+" - Y###mouse-A-Y").c_str(), timesA.data(), deltasYA.data(), static_cast<int>(timesA.size()));
                 }
             }
 
@@ -1117,13 +1117,13 @@ void App::RenderPlotPanel() {
                     if (showDataPointMarkers_) {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 1.0f);
                     }
-                    ImPlot::PlotLine("Mouse B - X", timesB.data(), deltasXB.data(), static_cast<int>(timesB.size()));
+                    ImPlot::PlotLine((GetRecordingMouseName(true)+" - X###mouse-B-X").c_str(), timesB.data(), deltasXB.data(), static_cast<int>(timesB.size()));
 
                     ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), 1.5f);
                     if (showDataPointMarkers_) {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, markerSize_, ImVec4(1.0f, 0.7f, 0.2f, 1.0f), 1.0f);
                     }
-                    ImPlot::PlotLine("Mouse B - Y", timesB.data(), deltasYB.data(), static_cast<int>(timesB.size()));
+                    ImPlot::PlotLine((GetRecordingMouseName(true)+" - Y###mouse-B-Y").c_str(), timesB.data(), deltasYB.data(), static_cast<int>(timesB.size()));
                 }
             }
 
@@ -1309,6 +1309,15 @@ void App::OnResize(int width, int height) {
     if (renderer_) {
         renderer_->OnResize(width, height);
     }
+}
+
+std::string App::GetRecordingMouseName(bool mouseB) const {
+    const auto& mouse=mouseB ? currentSession_.mouseB : currentSession_.mouseA;
+    if (mouse.name.empty()) return mouseB ? "Mouse B (Test)" : "Mouse A (Reference)";
+    auto name=mouse.name;
+    // ImGui reserves ## for hidden IDs. Keep user names visible in legends.
+    for (auto& c : name) if (c=='#') c=' ';
+    return name+(mouseB ? " (B)" : " (A)");
 }
 
 std::string App::GetMouseDisplayName(const MouseDevice* device) const {
