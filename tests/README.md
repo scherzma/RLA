@@ -6,6 +6,10 @@ Scale checks cover delay, different event rates (including 125 Hz and 8 kHz), in
 
 Binning checks reproduce whole-report boundary spikes with a steady signal and timestamp jitter. They compare the error with time weighting, verify signed count conservation at fractional bin widths, and cover clock drift, duplicate timestamps, long idle gaps, and invalid parameters. Plot frames exercise both weighting settings.
 
+Scale regression coverage also includes a small axis rotation in the dominant matching movement, with a minority of aligned sections at a different scale. This prevents vector-based selection from choosing the wrong amplitude for the magnitude plot.
+
+After building, run `./x64/Regression/Regression.exe <session.json> <manual-scale>` for a targeted check of a local recording. This prints the automatic scale and accepted section count, then requires agreement with the supplied manual scale within 1%. It does not copy the recording into the repository.
+
 References used for the fixes:
 
 - [Microsoft: QueryPerformanceFrequency](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency). The counter frequency is fixed at system boot. Imported recordings must use their stored frequency.

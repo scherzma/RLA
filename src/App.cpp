@@ -314,7 +314,7 @@ void App::RenderScaleControls() {
     if (ImGui::Button("Auto Scale B")) ApplyAutoScaleB();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Stop recording, then fit B to A from matching direction and movement shape.\n"
+        ImGui::SetTooltip("Stop recording, then fit B's movement magnitude to A. Direction and shape select matching sections.\n"
             "Rejects idle, conflicting and weak matches. Needs at least three matching sections.\n"
             "Enables time-weighted bins (2 ms or longer for slower mice). Original counts and timestamps stay unchanged.");
     }

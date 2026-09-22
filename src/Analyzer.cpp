@@ -104,29 +104,34 @@ ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
         double bestError = 0.04, bestScale = 0;
         // Allow up to 10 ms of delay for matching only; plots retain original time.
         for (int lag = -maxLagBins; lag <= maxLagBins; ++lag) {
-            double aa = 0, bb = 0, ab = 0, ax = 0, ay = 0, bx = 0, by = 0;
+            double aa = 0, bb = 0, ab = 0, sumA = 0, sumB = 0;
             int active = 0, sameDirection = 0;
             for (int j = 0; j < windowBins; ++j) {
                 const auto va = at(a, first + j), vb = at(b, first + j + lag);
                 const double a2 = va.x * va.x + va.y * va.y;
                 const double b2 = vb.x * vb.x + vb.y * vb.y;
                 const double dot = va.x * vb.x + va.y * vb.y;
-                aa += a2; bb += b2; ab += dot;
-                ax += va.x; ay += va.y; bx += vb.x; by += vb.y;
+                const double magnitudeA = std::sqrt(a2), magnitudeB = std::sqrt(b2);
+                aa += a2; bb += b2; ab += magnitudeA * magnitudeB;
+                sumA += magnitudeA; sumB += magnitudeB;
                 if (a2 >= 4 && b2 >= 4) {
                     ++active;
                     if (dot > 0.9 * std::sqrt(a2 * b2)) ++sameDirection;
                 }
             }
             if (active < windowBins * 0.6 || sameDirection < active * 0.9 || aa <= 0 || bb <= 0) continue;
-            // Centered vector correlation rejects unrelated and constant movement.
-            const double varA = aa - (ax * ax + ay * ay) / windowBins;
-            const double varB = bb - (bx * bx + by * by) / windowBins;
+            // Direction is a match gate, not an amplitude measurement. Fitting
+            // vector projections would shrink the scale when mouse axes differ.
+            // Match the magnitude shape that the user sees in the plot.
+            const double varA = aa - sumA * sumA / windowBins;
+            const double varB = bb - sumB * sumB / windowBins;
             if (varA < aa * 0.02 || varB < bb * 0.02) continue;
-            const double correlation = (ab - (ax * bx + ay * by) / windowBins) / std::sqrt(varA * varB);
+            const double correlation = (ab - sumA * sumB / windowBins) / std::sqrt(varA * varB);
             if (correlation < 0.9) continue;
-            const double scale = ab / bb;
-            const double error = (std::max)(0.0, (aa - ab * ab / bb) / aa);
+            // Matched path-length ratio treats both measured streams equally.
+            // The median across sections below limits the effect of outliers.
+            const double scale = sumA / sumB;
+            const double error = (std::max)(0.0, (aa - 2 * scale * ab + scale * scale * bb) / aa);
             if (scale >= 0.01 && scale <= 100 && error < bestError) {
                 bestError = error;
                 bestScale = scale;
@@ -147,7 +152,7 @@ ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
         }
     }
     result.matchedWindows = bestEnd - bestBegin;
-    if (result.matchedWindows < 3 || result.matchedWindows * 2 <= slopes.size()) {
+    if (result.matchedWindows < 3 || result.matchedWindows * 3 < slopes.size() * 2) {
         result.message = "Matching sections give conflicting scales. Use a recording with more shared movement.";
         return result;
     }

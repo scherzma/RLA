@@ -209,6 +209,23 @@ static void RunComparisonChecks() {
     }
     auto session = ComparisonSession();
     AppRegressionAccess::RunComparison(session);
+    // Small axis differences must not reject the dominant matching motion and
+    // leave only a minority of aligned sections with a different scale.
+    auto rotated = ComparisonSession(1000, 0);
+    const double angle = 14.0 * 3.14159265358979323846 / 180.0;
+    for (size_t i = 0; i < 700; ++i) {
+        const double x = rotated.eventsA[i].deltaX, y = rotated.eventsA[i].deltaY;
+        if (i < 200) {
+            rotated.eventsB[i].deltaX = static_cast<int32_t>(std::round(x / 1.85));
+            rotated.eventsB[i].deltaY = static_cast<int32_t>(std::round(y / 1.85));
+        } else {
+            rotated.eventsB[i].deltaX = static_cast<int32_t>(std::round((x * std::cos(angle) - y * std::sin(angle)) / 2));
+            rotated.eventsB[i].deltaY = static_cast<int32_t>(std::round((x * std::sin(angle) + y * std::cos(angle)) / 2));
+        }
+    }
+    const auto rotatedFit = Analyzer::FitScaleB(rotated);
+    Check(rotatedFit.valid && std::abs(rotatedFit.scale - 2.0) < 0.03 && rotatedFit.matchedWindows >= 8,
+          "Magnitude fitting must retain matching movement with small axis differences");
     // Aggregate both streams to 125 Hz to check adaptive bins for slower mice.
     auto slow = session;
     auto aggregate = [](const std::vector<MouseEvent>& input) {
@@ -270,8 +287,26 @@ static void RunComparisonChecks() {
     std::cout << "Scale, timing and plot-mode checks passed.\n";
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        // Optional targeted check on a local recording. No recording is copied
+        // into the repository. The expected manual scale is supplied by the user.
+        if (argc > 1) {
+            RLA::DataStore store;
+            const auto recording = store.LoadFromJson(argv[1]);
+            Check(recording.has_value(), "Could not load the supplied recording");
+            const auto fit = RLA::Analyzer::FitScaleB(*recording);
+            Check(fit.valid, "The supplied recording must have a valid scale fit");
+            std::cout << "Recording scale=" << fit.scale << ", matched sections=" << fit.matchedWindows
+                      << "/" << fit.testedWindows << '\n';
+            if (argc > 2) {
+                const double expected = std::stod(argv[2]);
+                Check(expected > 0 && std::abs(fit.scale / expected - 1) < 0.01,
+                      "Recording fit must be within 1 percent of the supplied manual scale");
+                std::cout << "Manual scale check passed (within 1 percent).\n";
+            }
+            return 0;
+        }
         RunBinningChecks();
         RunComparisonChecks();
         using namespace RLA;
