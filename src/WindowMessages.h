@@ -23,9 +23,10 @@ bool PumpWindowMessages(MSG& message, Peek peek, Dispatch dispatch) {
     for (UINT motion : {UINT(WM_MOUSEMOVE), UINT(WM_NCMOUSEMOVE)}) {
         if (peek(message, motion, motion) && !process()) return false;
     }
-    while (peek(message, 0, WM_NCMOUSEMOVE - 1) ||
+    for (unsigned remaining = 256; remaining > 0 &&
+          (peek(message, 0, WM_NCMOUSEMOVE - 1) ||
            peek(message, WM_NCMOUSEMOVE + 1, WM_MOUSEMOVE - 1) ||
-           peek(message, WM_MOUSEMOVE + 1, UINT_MAX)) {
+           peek(message, WM_MOUSEMOVE + 1, UINT_MAX)); --remaining) {
         if (!process()) return false;
     }
     return true;

@@ -50,6 +50,13 @@ static void RunWindowMessageChecks() {
         [](MSG& msg, UINT, UINT) { msg.message = WM_QUIT; return true; },
         [](MSG&) { Check(false, "WM_QUIT must not dispatch"); }), "Quit must stop the message pump");
     std::cout << "UI message checks passed with continuous cursor motion.\n";
+    unsigned dispatched = 0;
+    Check(RLA::PumpWindowMessages(message,
+        [](MSG& msg, UINT first, UINT last) {
+            if (WM_KEYDOWN < first || WM_KEYDOWN > last) return false;
+            msg.message = WM_KEYDOWN; return true;
+        }, [&](MSG&) { Check(++dispatched <= 256, "A non-motion flood must not block rendering"); }), "Message flood must continue next frame");
+    Check(dispatched == 256, "Non-motion messages need a finite frame budget");
 }
 
 static RLA::RecordingSession PauseSession() {
@@ -135,11 +142,15 @@ struct InputEngineRegressionAccess {
             Check(e.timestamp >= previous && (received % 64 == 0 || e.timestamp == previous),
                   "A batch must share a read timestamp, with ordered batches");
             previous = e.timestamp; ++received;
-        });
+        }, engine->GetBufferSize());
         const auto stats = engine->GetCaptureDiagnostics();
         Check(received == 16000 && stats.packets == 16000 && stats.groupedPackets == 16000 &&
               stats.maxBatch == 64 && stats.droppedEvents == 0 && stats.readErrors == 0,
               "Buffered diagnostics must account for every report");
+        Push(*engine, {nullptr, 0, 1, 0});
+        const auto drained = engine->ProcessEvents([&](const MouseEvent& e) { Push(*engine, e); });
+        Check(drained == 1 && engine->GetBufferSize() == 1, "Newly queued events must not extend the current UI drain");
+        engine->ProcessEvents([](const MouseEvent&) {});
 
         // A larger variable-size non-mouse record requires a retry and must be skipped.
         batches = {std::vector<BYTE>(70000)}; counts = {1}; nextBatch = 0;
@@ -212,6 +223,43 @@ struct InputEngineRegressionAccess {
 };
 
 struct AppRegressionAccess {
+    static void RunLatency(const RecordingSession& session) {
+        App app;
+        app.currentSession_ = session;
+        app.RebuildPlotData();
+        app.StartLatencyAnalysis();
+        Check(app.latencyTask_.valid(), "Latency analysis must start in the background");
+        Check(app.latencyTask_.wait_for(std::chrono::seconds(5)) == std::future_status::ready, "Latency worker must finish");
+        app.PollLatencyAnalysis();
+        Check(app.latencyFit_.valid, "Completed latency analysis must reach the UI");
+        ImGui::CreateContext(); ImPlot::CreateContext();
+        auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
+        io.DisplaySize = ImVec2(1280, 1000); io.DeltaTime = 1.0f / 60.0f;
+        unsigned char* pixels; int width, height; io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        app.selectedLatencyMatch_ = 0; app.focusLatencyMatch_ = true;
+        const auto match = app.latencyFit_.matches.front();
+        for (int frame=0; frame<2; ++frame) {
+            ImGui::NewFrame(); ImGui::SetNextWindowSize(ImVec2(1280, 1000)); ImGui::Begin("Latency UI");
+            app.RenderPlotPanel(); ImGui::End(); ImGui::Render();
+            Check(ImGui::GetDrawData()->TotalVtxCount > 0, "Latency markers must render");
+        }
+        auto& plots = ImPlot::GetCurrentContext()->Plots;
+        Check(plots.GetBufSize() == 1, "Latency uses the movement plot");
+        const auto* plot = plots.GetByIndex(0);
+        Check(plot->Axes[ImAxis_X1].Range.Contains(match.timeA) && plot->Axes[ImAxis_X1].Range.Contains(match.timeB) &&
+              plot->Axes[ImAxis_X1].Range.Size() < 50, "Selected match must center the movement plot");
+        ImPlot::DestroyContext(); ImGui::DestroyContext();
+        app.StartLatencyAnalysis();
+        app.RebuildPlotData(); // Simulate loading a new recording while the worker runs.
+        Check(app.latencyTask_.wait_for(std::chrono::seconds(5)) == std::future_status::ready, "Second latency worker must finish");
+        app.PollLatencyAnalysis();
+        Check(!app.latencyFit_.valid && app.latencyFit_.matches.empty(), "Stale results must not reach a different recording");
+        app.state_ = AppState::Recording;
+        app.StartLatencyAnalysis();
+        Check(!app.latencyTask_.valid(), "Analysis must not read a live recording");
+        app.state_ = AppState::Ready;
+    }
+
     static void RunComparison(const RecordingSession& session) {
         App app;
         app.currentSession_ = session;
@@ -357,6 +405,12 @@ struct AppRegressionAccess {
         Check(times.size() == 2 && times[0] == 1.5 && times[1] == 2.5,
               "Time binning must use the saved frequency");
         Check(std::abs(values[0] - 500000.0) < 0.01, "Binned magnitude must not overflow");
+        app.InterpolateGaps({0, 1e12}, {2, 4}, times, values, 5, 1);
+        Check(times.size() <= 102 && times.front() == 0 && times.back() == 1e12 &&
+              std::is_sorted(times.begin(), times.end()), "Long idle gaps must have bounded, ordered plot points");
+        Check(values.front() == 2 && values.back() == 4 && values[1] == 0, "Gap filling must preserve event values");
+        app.InterpolateGaps({0, 10}, {2, 4}, times, values, 5, 0);
+        Check(times.size() == 2, "Invalid interpolation spacing must not loop forever");
 
         app.deviceManager_ = std::make_unique<DeviceManager>();
         app.inputEngine_ = std::make_unique<InputEngine>();
@@ -605,6 +659,117 @@ static void RunComparisonChecks() {
     std::cout << "Scale, timing and plot-mode checks passed.\n";
 }
 
+static RLA::RecordingSession LatencySession(double delayMs = 2.75, int rateA = 8000, int rateB = 4000) {
+    RLA::RecordingSession session;
+    session.startTimestamp = 3000000;
+    session.qpcFrequency = 1000000;
+    session.endTimestamp = session.startTimestamp + 1300000;
+    auto make = [&](std::vector<RLA::MouseEvent>& events, int rate, double scale, double delay) {
+        const double step = 1000.0 / rate;
+        auto position = [&](double t) { return std::llround(scale * 20000 * std::sin(t * 6.283185307179586 / 120)); };
+        for (double t = step; t <= 1200; t += step) {
+            const int dx = static_cast<int>(position(t) - position(t-step));
+            if (dx) events.push_back({nullptr, session.startTimestamp + std::llround((50 + t + delay) * 1000), dx, 0});
+        }
+    };
+    make(session.eventsA, rateA, 1, 0);
+    make(session.eventsB, rateB, 0.45, delayMs);
+    return session;
+}
+
+static void RunLatencyChecks() {
+    using namespace RLA;
+    AppRegressionAccess::RunLatency(LatencySession());
+    for (double delay : {2.75, -1.625, 0.0}) for (int mode : {0, 1, 2}) {
+        auto session = LatencySession(delay);
+        const auto fit = Analyzer::FitLatency(session, mode);
+        std::cout << "Latency mode=" << mode << " expected=" << delay << " fit=" << fit.differenceMs
+                  << " cycles=" << fit.matchedCycles << " features=" << fit.matches.size() << " " << fit.message << '\n';
+        Check(fit.valid && fit.matchedCycles >= 10 && std::abs(fit.differenceMs - delay) < 0.12,
+              "Latency must recover signed delay across different report rates and amplitudes");
+        for (const auto& match : fit.matches) {
+            Check(mode != 0 || match.feature == LatencyFeature::Minimum, "Minima mode must contain only minima");
+            Check(mode != 1 || match.feature != LatencyFeature::Minimum, "Half-height mode must contain only slopes");
+        }
+    }
+    auto session = LatencySession();
+    // Reject separate motion and collisions but retain clean shared cycles.
+    for (auto& e : session.eventsB) {
+        const auto t = e.timestamp - session.startTimestamp;
+        if (t > 300000 && t < 600000) e.deltaX *= -1;
+        if (t > 900000 && t < 902000) e.deltaX *= 20;
+    }
+    auto fit = Analyzer::FitLatency(session);
+    Check(fit.valid && std::abs(fit.differenceMs - 2.75) < 0.15 && fit.matchedCycles < 20,
+          "Mismatched motion must not bias the accepted cycles");
+    for (auto* events : {&session.eventsA, &session.eventsB}) {
+        std::erase_if(*events, [&](const MouseEvent& e) {
+            const auto t = e.timestamp-session.startTimestamp; return t > 700000 && t < 1000000;
+        });
+    }
+    fit = Analyzer::FitLatency(session);
+    Check(fit.valid && std::abs(fit.differenceMs - 2.75) < 0.15, "Idle gaps must not become fitted movement minima");
+    session = LatencySession();
+    for (auto& e : session.eventsB) e.deltaX *= -1;
+    Check(!Analyzer::FitLatency(session).valid, "Opposite movement must not produce a latency estimate");
+    session = LatencySession();
+    for (auto* events : {&session.eventsA, &session.eventsB}) for (auto& e : *events) { e.deltaX = 100; e.deltaY = 0; }
+    Check(!Analyzer::FitLatency(session).valid, "Flat curves must not produce a latency estimate");
+    session.eventsB.clear();
+    Check(!Analyzer::FitLatency(session).valid, "Latency requires two mice");
+    session = LatencySession(); session.eventsB[5].timestamp = 0;
+    Check(!Analyzer::FitLatency(session).valid, "Unordered events must not be fitted");
+}
+
+static void RunAutosaveChecks() {
+    using namespace RLA;
+    const auto directory = std::filesystem::temp_directory_path() / (L"RLA-autosave-test-" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::create_directories(directory);
+    const auto manual = directory / L"manual.json";
+    { std::ofstream file(manual); file << "keep me"; }
+    const auto child = directory / L"RLA-autosave-subdirectory.json";
+    std::filesystem::create_directory(child);
+    auto wait = [](Autosave& archive) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (archive.GetStatus().busy && std::chrono::steady_clock::now() < deadline) Sleep(1);
+        Check(!archive.GetStatus().busy, "Autosave worker must complete");
+        return archive.GetStatus();
+    };
+    {
+        Autosave archive(directory);
+        archive.Save(LatencySession(), L"Reference", L"Test");
+        archive.Save(LatencySession(-1.0), L"Reference", L"Test");
+        const auto status = wait(archive);
+        Check(!status.lastFile.empty(), "Completed recording must autosave");
+        DataStore store;
+        const auto loaded = store.LoadFromJson(status.lastFile);
+        Check(loaded && loaded->eventsB.front().timestamp == LatencySession(-1.0).eventsB.front().timestamp,
+              "Autosave must preserve the recording snapshot");
+        size_t files = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(directory))
+            if (entry.is_regular_file() && entry.path() != manual) ++files;
+        Check(files == 2, "Consecutive recordings must have distinct autosaves");
+        Check(archive.Clear(), "Clear must start when idle");
+        Check(wait(archive).lastFile.empty(), "Clearing must remove the last autosave reference");
+        Check(std::filesystem::exists(manual) && std::filesystem::is_directory(child), "Clear must preserve manual saves and directories");
+        files = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(directory)) if (entry.is_regular_file()) ++files;
+        Check(files == 1, "Clear must remove owned autosaves");
+        archive.Save(LatencySession(), L"Reference", L"Test");
+        // Destructor must finish a queued save.
+    }
+    { Autosave archive(directory); Check(archive.Clear(), "Reopened archive must clear saved files"); wait(archive); }
+    {
+        Autosave badArchive(manual); // File where a directory is required.
+        badArchive.Save(LatencySession(), L"Reference", L"Test");
+        Check(wait(badArchive).message.starts_with("Autosave failed:"), "Disk failures must reach the UI status");
+    }
+    std::filesystem::remove(child);
+    std::filesystem::remove(manual);
+    std::filesystem::remove(directory);
+    std::cout << "Autosave snapshot, queue, clear, shutdown and error checks passed.\n";
+}
+
 int main(int argc, char** argv) {
     try {
         // Optional targeted check on a local recording. No recording is copied
@@ -613,6 +778,18 @@ int main(int argc, char** argv) {
             RLA::DataStore store;
             const auto recording = store.LoadFromJson(argv[1]);
             Check(recording.has_value(), "Could not load the supplied recording");
+            if (argc > 2 && std::string_view(argv[2]) == "--latency") {
+                for (int mode : {0, 1, 2}) {
+                    const auto started = std::chrono::steady_clock::now();
+                    const auto latency = RLA::Analyzer::FitLatency(*recording, mode);
+                    std::cout << "Latency mode=" << mode << " valid=" << latency.valid << " B-A=" << latency.differenceMs
+                              << " ms MAD=" << latency.spreadMs << " bins=" << latency.binMs << " cycles=" << latency.matchedCycles
+                              << " points=" << latency.matches.size() << " candidates=" << latency.candidatePairs << " elapsed="
+                              << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-started).count() << " ms\n"
+                              << latency.message << '\n';
+                }
+                return 0;
+            }
             const auto fit = RLA::Analyzer::FitScaleB(*recording);
             Check(fit.valid, "The supplied recording must have a valid scale fit");
             std::cout << "Recording scale=" << fit.scale << ", matched sections=" << fit.matchedWindows
@@ -627,6 +804,8 @@ int main(int argc, char** argv) {
         }
         RLA::InputEngineRegressionAccess::Run();
         RunWindowMessageChecks();
+        RunLatencyChecks();
+        RunAutosaveChecks();
         RunBinningChecks();
         RunTimingPauseChecks();
         RunComparisonChecks();

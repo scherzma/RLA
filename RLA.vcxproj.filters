@@ -24,6 +24,8 @@
     <ClCompile Include="src\Analyzer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\Latency.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\Autosave.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\DataStore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -44,6 +46,7 @@
     <ClInclude Include="src\Analyzer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\Autosave.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\DataStore.h">
       <Filter>Header Files</Filter>
     </ClInclude>

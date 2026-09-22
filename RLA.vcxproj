@@ -141,6 +141,8 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="src\App.cpp" />
     <ClCompile Include="src\Analyzer.cpp" />
+    <ClCompile Include="src\Latency.cpp" />
+    <ClCompile Include="src\Autosave.cpp" />
     <ClCompile Include="src\DataStore.cpp" />
     <ClCompile Include="src\DeviceManager.cpp" />
     <ClCompile Include="src\InputEngine.cpp" />
@@ -149,6 +151,7 @@
   <ItemGroup>
     <ClInclude Include="src\App.h" />
     <ClInclude Include="src\Analyzer.h" />
+    <ClInclude Include="src\Autosave.h" />
     <ClInclude Include="src\DataStore.h" />
     <ClInclude Include="src\DeviceManager.h" />
     <ClInclude Include="src\InputEngine.h" />

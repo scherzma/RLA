@@ -31,7 +31,7 @@ public:
 
     // Process pending events - call from main thread
     // Returns number of events processed
-    size_t ProcessEvents(const EventCallback& callback);
+    size_t ProcessEvents(const EventCallback& callback, size_t maxEvents = 8192);
 
     // Get buffer statistics
     size_t GetBufferSize() const { return eventBuffer_.size(); }
@@ -58,7 +58,7 @@ private:
     static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     // Returns false on an API/packet error. Called only on the input thread.
-    bool DrainRawInput();
+    bool DrainRawInput(size_t* recordsRead = nullptr);
     bool ProcessRawBatch(const BYTE* bytes, size_t size, UINT count, int64_t timestamp);
 
     // Register/unregister raw input for the hidden window

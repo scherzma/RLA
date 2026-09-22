@@ -10,6 +10,7 @@
 // Windows file dialogs
 #include <commdlg.h>
 #include <ShlObj.h>
+#include <shellapi.h>
 
 namespace RLA {
 
@@ -20,6 +21,7 @@ App::App() {
 }
 
 App::~App() {
+    if (state_ == AppState::Recording && inputEngine_ && deviceManager_) StopRecording();
     if (inputEngine_) inputEngine_->SetRawCapture(false);
     ReleaseRecordingCursor();
 }
@@ -46,12 +48,18 @@ bool App::Initialize(HWND hwnd, int width, int height) {
     }
 
     inputEngine_->Start();
+    wchar_t localData[MAX_PATH]{};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localData))) {
+        try { autosave_ = std::make_unique<Autosave>(std::filesystem::path(localData) / L"RLA" / L"Autosaves"); }
+        catch (const std::exception& error) { autosaveError_ = error.what(); }
+    } else autosaveError_ = "The local application data folder is unavailable.";
     statusMessage_ = "Ready - Assign mice to begin";
 
     return true;
 }
 
 void App::Update() {
+    PollLatencyAnalysis();
     UpdateRecordingCursor();
     const bool stopClick = inputEngine_->TakeStopClick();
     // Process input events
@@ -90,7 +98,7 @@ void App::Update() {
                 liveVelocitiesB_.push_back(velocity);
             }
         }
-    });
+    }, stoppingRecording_ ? inputEngine_->GetBufferSize() : 8192);
     if (state_ == AppState::Recording) currentSession_.capture = inputEngine_->GetCaptureDiagnostics();
     if (state_ == AppState::Recording && inputEngine_->IsRawCapture() && !stoppingRecording_ &&
         (stopClick || (hwnd_ && GetForegroundWindow() != hwnd_)))
@@ -297,6 +305,121 @@ void App::RenderControlPanel() {
     ImGui::SameLine();
     if (ImGui::Checkbox("Keep cursor in window", &keepCursorInWindow_)) UpdateRecordingCursor();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keeps the pointer over RLA while recording. Releases it on stop or focus loss.\nThis controls which window receives ordinary cursor input; raw movement counts are unchanged.");
+    ImGui::SameLine();
+    RenderAutosaveControls();
+}
+
+void App::RenderAutosaveControls() {
+    if (ImGui::Button("Autosaves")) ImGui::OpenPopup("Autosave settings");
+    bool confirmClear = false;
+    if (ImGui::BeginPopup("Autosave settings")) {
+        ImGui::TextUnformatted("Each completed recording is saved automatically.");
+        if (autosave_) {
+            const auto status = autosave_->GetStatus();
+            const auto path = autosave_->Directory().u8string();
+            ImGui::TextUnformatted(reinterpret_cast<const char*>(path.c_str()));
+            ImGui::TextUnformatted(status.message.c_str());
+            if (ImGui::Button("Open folder")) {
+                std::error_code error;
+                std::filesystem::create_directories(autosave_->Directory(), error);
+                if (error || reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd_, L"open", autosave_->Directory().c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+                    statusMessage_ = "Could not open the autosave folder.";
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(status.busy || state_ == AppState::Recording);
+            if (ImGui::Button("Clear autosaves")) { confirmClear = true; ImGui::CloseCurrentPopup(); }
+            ImGui::EndDisabled();
+        } else ImGui::Text("Autosave unavailable: %s", autosaveError_.c_str());
+        ImGui::EndPopup();
+    }
+    if (confirmClear) ImGui::OpenPopup("Clear autosaves?");
+    if (ImGui::BeginPopupModal("Clear autosaves?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Delete RLA-autosave-*.json files in the autosave folder?\nOther files and the current recording will remain.");
+        ImGui::BeginDisabled(!autosave_ || autosave_->GetStatus().busy || state_ == AppState::Recording);
+        if (ImGui::Button("Delete autosaves")) { autosave_->Clear(); ImGui::CloseCurrentPopup(); }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
+void App::ResetLatencyAnalysis() {
+    ++sessionRevision_;
+    latencyFit_ = {};
+    selectedLatencyMatch_ = -1;
+    focusLatencyMatch_ = false;
+}
+
+void App::StartLatencyAnalysis() {
+    if (state_ == AppState::Recording || latencyTask_.valid()) return;
+    latencyFit_ = {};
+    selectedLatencyMatch_ = -1;
+    latencyRevision_ = sessionRevision_;
+    try {
+        latencyTask_ = std::async(std::launch::async, [session = currentSession_, mode = latencyMode_] {
+            return Analyzer::FitLatency(session, mode);
+        });
+    } catch (const std::exception& error) { latencyFit_.message = std::string("Analysis failed: ") + error.what(); }
+}
+
+void App::PollLatencyAnalysis() {
+    if (!latencyTask_.valid() || latencyTask_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    try {
+        auto fit = latencyTask_.get();
+        if (latencyRevision_ == sessionRevision_) latencyFit_ = std::move(fit);
+    } catch (const std::exception& error) {
+        if (latencyRevision_ == sessionRevision_) latencyFit_.message = std::string("Analysis failed: ") + error.what();
+    }
+}
+
+void App::RenderLatencyControls() {
+    ImGui::BeginDisabled(state_ == AppState::Recording || latencyTask_.valid());
+    ImGui::SetNextItemWidth(125);
+    if (ImGui::Combo("##Latency features", &latencyMode_, "Minima\0Half-height\0Both\0")) ResetLatencyAnalysis();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(currentSession_.eventsA.empty() || currentSession_.eventsB.empty());
+    if (ImGui::Button("Auto latency")) StartLatencyAnalysis();
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (latencyTask_.valid()) ImGui::TextUnformatted("Analyzing...");
+    else {
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compare matching minima and/or 50%% height crossings on rising and falling slopes.\nNeeds at least three clean shared cycles. Fits within +/-10 ms. Uses its own common time bins.\nPositive B-A means B appears later. Motion and application timing affect this estimate.");
+    }
+    if (!latencyFit_.message.empty() && !latencyFit_.valid) ImGui::TextWrapped("%s", latencyFit_.message.c_str());
+    if (!latencyFit_.valid) return;
+    ImGui::Text("B-A: %+.3f ms | spread (MAD): %.3f ms | %zu cycles, %zu points | bins: %.3f ms",
+        latencyFit_.differenceMs, latencyFit_.spreadMs, latencyFit_.matchedCycles, latencyFit_.matches.size(), latencyFit_.binMs);
+    ImGui::SameLine();
+    ImGui::Checkbox("Fit markers", &showLatencyMarkers_);
+    if (ImGui::TreeNode("Latency details")) {
+        ImGui::TextWrapped("%s", latencyFit_.message.c_str());
+        ImGui::TextUnformatted("Spread describes variation between points, not measurement accuracy. Select a row to view it.");
+        if (ImGui::BeginTable("Matched features", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, 130))) {
+            for (const char* label : {"Feature", "A (ms)", "B (ms)", "B-A (ms)", "Shape match"}) ImGui::TableSetupColumn(label);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(latencyFit_.matches.size()));
+            while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const auto& match = latencyFit_.matches[i];
+                ImGui::PushID(i); ImGui::TableNextRow(); ImGui::TableNextColumn();
+                const char* name = match.feature == LatencyFeature::Minimum ? "Minimum" : match.feature == LatencyFeature::Rising ? "Rising 50%" : "Falling 50%";
+                if (ImGui::Selectable(name, selectedLatencyMatch_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
+                    selectedLatencyMatch_ = i; focusLatencyMatch_ = true;
+                }
+                ImGui::TableNextColumn(); ImGui::Text("%.3f", match.timeA);
+                ImGui::TableNextColumn(); ImGui::Text("%.3f", match.timeB);
+                ImGui::TableNextColumn(); ImGui::Text("%+.3f", match.differenceMs);
+                ImGui::TableNextColumn(); ImGui::Text("%.1f%%", match.quality * 100);
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
 }
 
 void App::ApplyAutoScaleB() {
@@ -494,6 +617,7 @@ void App::RenderPlotPanel() {
         return;
     }
     RenderScaleControls();
+    if (plotMode_ == 0) RenderLatencyControls();
 
     // Measure after controls so the graph uses the remaining height.
     auto plotSize = []() {
@@ -567,6 +691,12 @@ void App::RenderPlotPanel() {
             } else {
                 ImPlot::SetupAxisLimits(ImAxis_X1, 0, 1000, ImGuiCond_Once);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
+            }
+
+            if (focusLatencyMatch_ && selectedLatencyMatch_ >= 0 && selectedLatencyMatch_ < static_cast<int>(latencyFit_.matches.size())) {
+                const auto& match = latencyFit_.matches[selectedLatencyMatch_];
+                ImPlot::SetupAxisLimits(ImAxis_X1, (std::min)(match.timeA, match.timeB) - 15, (std::max)(match.timeA, match.timeB) + 15, ImPlotCond_Always);
+                focusLatencyMatch_ = false;
             }
 
             // Get events to plot (works for both recording and stopped states)
@@ -665,6 +795,14 @@ void App::RenderPlotPanel() {
                 }
             }
 
+            if (showLatencyMarkers_ && latencyFit_.valid) {
+                std::vector<double> marksA, marksB;
+                for (const auto& match : latencyFit_.matches) { marksA.push_back(match.timeA); marksB.push_back(match.timeB); }
+                ImPlot::SetNextLineStyle(ImVec4(0.4f, 0.75f, 1.0f, 0.5f));
+                ImPlot::PlotInfLines("A fit points", marksA.data(), static_cast<int>(marksA.size()), ImPlotInfLinesFlags_None);
+                ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.65f, 0.3f, 0.5f));
+                ImPlot::PlotInfLines("B fit points", marksB.data(), static_cast<int>(marksB.size()), ImPlotInfLinesFlags_None);
+            }
             ImPlot::EndPlot();
         }
     }
@@ -903,6 +1041,13 @@ void App::RenderStatusBar() {
     ImGui::TextColored(stateColor, "[%s]", stateStr);
     ImGui::SameLine();
     ImGui::Text("%s", statusMessage_.c_str());
+    if (state_ != AppState::Recording) {
+        const auto message = autosave_ ? autosave_->GetStatus().message : autosaveError_;
+        if (!message.empty()) {
+            ImGui::SameLine();
+            ImGui::TextUnformatted(message.c_str());
+        }
+    }
 }
 
 void App::TransitionTo(AppState newState) {
@@ -916,6 +1061,7 @@ void App::StartRecording() {
     }
     deviceManager_->CancelAssignment();
     currentSession_ = RecordingSession{};
+    ResetLatencyAnalysis();
     enableYScaleB_ = false;
     yScaleB_ = 1.0f;
     autoScaleMessage_.clear();
@@ -961,6 +1107,12 @@ void App::StopRecording() {
         statusMessage_ += " Could not restore mouse controls. Press Esc to retry or Alt+F4 to close.";
     ReleaseRecordingCursor();
     stoppingRecording_ = false;
+    if (autosave_) {
+        const auto* a = deviceManager_->GetMouseADevice();
+        const auto* b = deviceManager_->GetMouseBDevice();
+        try { autosave_->Save(currentSession_, a ? a->name : L"Unknown", b ? b->name : L"Unknown"); }
+        catch (const std::exception& error) { statusMessage_ += std::string(" Autosave failed: ") + error.what(); }
+    }
 }
 
 void App::OnCaptureEscape() {
@@ -1081,6 +1233,7 @@ void App::LoadSession() {
 }
 
 void App::RebuildPlotData() {
+    ResetLatencyAnalysis();
     enableYScaleB_ = false;
     yScaleB_ = 1.0f;
     autoScaleMessage_.clear();
@@ -1207,7 +1360,10 @@ void App::InterpolateGaps(const std::vector<double>& times, const std::vector<do
     outTimes.clear();
     outValues.clear();
 
-    if (times.empty()) return;
+    if (times.empty() || times.size() != values.size()) return;
+    if (!std::isfinite(sampleIntervalMs) || sampleIntervalMs <= 0) {
+        outTimes = times; outValues = values; return;
+    }
 
     for (size_t i = 0; i < times.size(); ++i) {
         // Check for gap before this point (except for first point)
@@ -1216,11 +1372,15 @@ void App::InterpolateGaps(const std::vector<double>& times, const std::vector<do
             if (gap > gapThresholdMs) {
                 // Insert zero-velocity points to fill the gap
                 // Start a bit after the previous point and end a bit before this point
-                double t = times[i - 1] + sampleIntervalMs;
-                while (t < times[i] - sampleIntervalMs / 2.0) {
+                // Keep short gaps sampled for smoothing. A long idle period
+                // needs only boundary samples and a flat line between them.
+                // Bound this work independently of the duration of a pause.
+                const size_t count = static_cast<size_t>((std::min)(100.0, std::ceil(gap / sampleIntervalMs)));
+                for (size_t j = 1; j <= count; ++j) {
+                    const double t = j <= count / 2 ? times[i - 1] + j * sampleIntervalMs : times[i] - (count - j + 1) * sampleIntervalMs;
+                    if (t <= times[i - 1] || t >= times[i] || t <= outTimes.back()) continue;
                     outTimes.push_back(t);
                     outValues.push_back(0.0);
-                    t += sampleIntervalMs;
                 }
             }
         }

@@ -69,7 +69,7 @@ LRESULT CALLBACK InputEngine::InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
 
 void InputEngine::InputThreadFunc() {
     // Set thread priority for time-critical input handling
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
     // Register window class for the hidden input window
     WNDCLASSEXW wc{};
@@ -122,10 +122,14 @@ void InputEngine::InputThreadFunc() {
     // unfiltered PeekMessage would remove packets before the buffered read.
     // RIDEV_DEVNOTIFY is deliberately not used: its messages share this queue.
     MSG msg{};
+    unsigned emptyWakeups = 0;
     while (!shouldStop_.load()) {
-        const bool readOk = DrainRawInput();
-        while (PeekMessage(&msg, nullptr, 0, WM_INPUT - 1, PM_REMOVE) ||
-               PeekMessage(&msg, nullptr, WM_INPUT + 1, UINT_MAX, PM_REMOVE)) {
+        size_t recordsRead = 0;
+        const bool readOk = DrainRawInput(&recordsRead);
+        unsigned messages = 0;
+        while (messages < 64 && (PeekMessage(&msg, nullptr, 0, WM_INPUT - 1, PM_REMOVE) ||
+               PeekMessage(&msg, nullptr, WM_INPUT + 1, UINT_MAX, PM_REMOVE))) {
+            ++messages;
             if (msg.message == WM_QUIT) {
                 shouldStop_ = true;
                 break;
@@ -135,7 +139,11 @@ void InputEngine::InputThreadFunc() {
         }
         if (shouldStop_) break;
         // Retry errors without spinning a time-critical thread on a stuck queue.
-        if (!readOk) Sleep(1);
+        emptyWakeups = recordsRead == 0 && messages == 0 ? emptyWakeups + 1 : 0;
+        if (!readOk || emptyWakeups >= 2) {
+            Sleep(1);
+            emptyWakeups = 0;
+        }
         const DWORD wait = MsgWaitForMultipleObjectsEx(0, nullptr, INFINITE,
             QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (wait == WAIT_FAILED) {
@@ -202,7 +210,8 @@ void InputEngine::Stop() {
     running_ = false;
 }
 
-bool InputEngine::DrainRawInput() {
+bool InputEngine::DrainRawInput(size_t* recordsRead) {
+    if (recordsRead) *recordsRead = 0;
     // Bound each drain so shutdown messages are serviced under continuous input.
     for (int batch = 0; batch < 32 && !shouldStop_; ++batch) {
         UINT size = static_cast<UINT>(rawBuffer_.size() * sizeof(uint64_t));
@@ -220,6 +229,7 @@ bool InputEngine::DrainRawInput() {
             return false;
         }
         if (count == 0) return true;
+        if (recordsRead) *recordsRead += count;
         LARGE_INTEGER timestamp;
         QueryPerformanceCounter(&timestamp);
         // RAWINPUT has no device timestamp. Preserve the shared read time;
@@ -268,10 +278,14 @@ CaptureDiagnostics InputEngine::GetCaptureDiagnostics() const {
         droppedEvents_.load(std::memory_order_relaxed), lastError_.load(std::memory_order_relaxed), rawCapture_.load()};
 }
 
-size_t InputEngine::ProcessEvents(const EventCallback& callback) {
+size_t InputEngine::ProcessEvents(const EventCallback& callback, size_t maxEvents) {
     size_t processed = 0;
-
-    while (auto event = eventBuffer_.pop()) {
+    // Drain a bounded snapshot. A producer that keeps adding events must not
+    // keep the UI inside this function indefinitely.
+    const size_t available = (std::min)(maxEvents, eventBuffer_.size());
+    while (processed < available) {
+        const auto event = eventBuffer_.pop();
+        if (!event) break;
         callback(*event);
         ++processed;
     }

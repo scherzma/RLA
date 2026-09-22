@@ -6,9 +6,11 @@
 #include "Analyzer.h"
 #include "Renderer.h"
 #include "DataStore.h"
+#include "Autosave.h"
 
 #include <memory>
 #include <string>
+#include <future>
 
 namespace RLA {
 
@@ -48,6 +50,11 @@ private:
     void RenderPlotPanel();
     void RenderScaleControls();
     void ApplyAutoScaleB();
+    void RenderLatencyControls();
+    void StartLatencyAnalysis();
+    void PollLatencyAnalysis();
+    void ResetLatencyAnalysis();
+    void RenderAutosaveControls();
     void RenderTimingPanel();
     void RenderStatusBar();
 
@@ -74,6 +81,8 @@ private:
     std::unique_ptr<DeviceManager> deviceManager_;
     std::unique_ptr<Analyzer> analyzer_;
     std::unique_ptr<DataStore> dataStore_;
+    std::unique_ptr<Autosave> autosave_;
+    std::string autosaveError_;
 
     // State
     AppState state_ = AppState::Idle;
@@ -88,6 +97,13 @@ private:
     // Recording data
     RecordingSession currentSession_;
     AnalysisResult analysisResult_;
+    LatencyFit latencyFit_;
+    std::future<LatencyFit> latencyTask_;
+    uint64_t sessionRevision_ = 0, latencyRevision_ = 0;
+    int latencyMode_ = 2;
+    bool showLatencyMarkers_ = true;
+    int selectedLatencyMatch_ = -1;
+    bool focusLatencyMatch_ = false;
 
     // UI state
     bool showPlotWindow_ = true;
