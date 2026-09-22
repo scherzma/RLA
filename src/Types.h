@@ -81,7 +81,7 @@ struct RecordingSession {
     double qpcFrequency = 0.0;
     CaptureDiagnostics capture; // Capture totals since application start, if recorded.
     RecordingMouse mouseA, mouseB; // Identity at capture time, independent of current assignments.
-    int captureTestMode = 0; // 0: ordinary recording, 1: live plot, 2: no plot; schedule v1.
+    int captureTestMode = 0; // 0: ordinary, 1: live plot, 2: hidden no plot, 3: foreground no plot; schedule v1.
     bool testCursorConfined = false;
     uint64_t testStartDrops = 0, testStartErrors = 0;
 };

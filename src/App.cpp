@@ -106,7 +106,7 @@ void App::Update() {
                  event.timestamp >= currentSession_.startTimestamp &&
                  (currentSession_.endTimestamp == 0 || event.timestamp <= currentSession_.endTimestamp)) {
             double timeMs = (event.timestamp - currentSession_.startTimestamp) * 1000.0 / currentSession_.qpcFrequency;
-            const bool preparePlot=currentSession_.captureTestMode!=2;
+            const bool preparePlot=currentSession_.captureTestMode<2;
             double velocity = preparePlot ? CalculateVelocity(event.deltaX, event.deltaY) : 0;
 
             if (deviceManager_->IsMouseA(event.deviceHandle)) {
@@ -120,8 +120,9 @@ void App::Update() {
         }
     }, stoppingRecording_ ? inputEngine_->GetBufferSize() : 8192);
     if (state_ == AppState::Recording) currentSession_.capture = inputEngine_->GetCaptureDiagnostics();
-    if (state_ == AppState::Recording && inputEngine_->IsRawCapture() && !stoppingRecording_ &&
-        (stopClick || (hwnd_ && GetForegroundWindow() != hwnd_)))
+    const HWND captureWindow=inputEngine_->ForegroundTestWindow() ? inputEngine_->ForegroundTestWindow() : hwnd_;
+    if (state_ == AppState::Recording && (inputEngine_->IsRawCapture() || inputEngine_->ForegroundTestWindow()) && !stoppingRecording_ &&
+        (stopClick || (captureWindow && GetForegroundWindow() != captureWindow)))
         StopRecording();
     if (state_==AppState::Recording && currentSession_.captureTestMode && !stoppingRecording_) {
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
@@ -185,7 +186,7 @@ void App::RenderMainWindow() {
     RenderDevicePanel();
     RenderControlPanel();
     ImGui::Separator();
-    if (state_==AppState::Recording && currentSession_.captureTestMode==2) {
+    if (state_==AppState::Recording && currentSession_.captureTestMode>=2) {
         ImGui::TextUnformatted("Capture-only test: graph processing is off. All movement reports are still recorded.");
     } else if (showLibrary_) {
         if (ImGui::Button("Back to recording")) showLibrary_=false;
@@ -366,7 +367,9 @@ void App::RenderCaptureTest() {
     if (ImGui::BeginPopup("Capture test settings")) {
         ImGui::TextUnformatted("Compare the same motion with and without live plotting.");
         ImGui::RadioButton("Live plot (baseline)",&captureTestChoice_,1);
-        ImGui::RadioButton("Capture only (no plot processing)",&captureTestChoice_,2);
+        ImGui::RadioButton("Hidden window / capture only",&captureTestChoice_,2);
+        ImGui::RadioButton("Foreground window / capture only",&captureTestChoice_,3);
+        ImGui::TextUnformatted("Foreground mode opens a separate window with the stage instructions.");
         ImGui::TextUnformatted("18 seconds: prepare 3s, A only 5s, both 5s, A only 5s.");
         ImGui::TextUnformatted("Keep polling rates, DPI, USB ports and movement speed unchanged.");
         ImGui::TextUnformatted("Repeat once in each mode. Keep RLA in the foreground.");
@@ -383,6 +386,13 @@ void App::RenderCaptureTest() {
                 currentSession_.testStartErrors=capture.readErrors;
                 showLibrary_=false; plotMode_=0;
                 ImGui::CloseCurrentPopup();
+                if (captureTestChoice_==3) {
+                    ReleaseRecordingCursor();
+                    if (!inputEngine_->BeginForegroundTest(currentSession_.startTimestamp)) {
+                        StopRecording();
+                        statusMessage_="Foreground test could not start. Capture window activation or registration failed; this is not a valid test.";
+                    } else UpdateRecordingCursor();
+                }
             }
         }
         ImGui::EndDisabled();
@@ -392,7 +402,7 @@ void App::RenderCaptureTest() {
     const bool recording=state_==AppState::Recording;
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
     const double elapsed=((recording ? now.QuadPart : currentSession_.endTimestamp)-currentSession_.startTimestamp)*1000.0/currentSession_.qpcFrequency;
-    const char* mode=currentSession_.captureTestMode==2 ? "Capture only" : "Live plot";
+    const char* mode=currentSession_.captureTestMode==3 ? "Foreground capture only" : currentSession_.captureTestMode==2 ? "Hidden capture only" : "Live plot";
     if (recording) {
         const char* instruction=elapsed<3000 ? "Get ready" : elapsed<8000 ? "Move A only" : elapsed<13000 ? "Move BOTH mice" : "Move A only again";
         const double next=elapsed<3000 ? 3000 : elapsed<8000 ? 8000 : elapsed<13000 ? 13000 : 18000;
@@ -1217,12 +1227,15 @@ void App::StopRecording() {
                                  currentSession_.eventsB.size());
 
     TransitionTo(AppState::Ready);
+    ReleaseRecordingCursor();
+    if ((currentSession_.captureTestMode==3 || inputEngine_->ForegroundTestWindow()) && !inputEngine_->EndForegroundTest(hwnd_))
+        statusMessage_ += " Could not restore the hidden capture window.";
     if (!inputEngine_->SetRawCapture(false))
         statusMessage_ += " Could not restore mouse controls. Press Esc to retry or Alt+F4 to close.";
     ReleaseRecordingCursor();
     stoppingRecording_ = false;
     if (!currentSession_.captureTestMode) DetectSessionRates();
-    if (currentSession_.captureTestMode==2) RebuildPlotData();
+    if (currentSession_.captureTestMode>=2) RebuildPlotData();
     if (autosave_) {
         const auto* a = deviceManager_->GetMouseADevice();
         const auto* b = deviceManager_->GetMouseBDevice();
@@ -1242,18 +1255,20 @@ void App::OnCaptureEscape() {
 }
 
 void App::OnCaptureFocusLost() {
+    if (inputEngine_ && inputEngine_->ForegroundTestWindow()) { ReleaseRecordingCursor(); return; }
     if (inputEngine_ && inputEngine_->IsRawCapture()) OnCaptureEscape();
     ReleaseRecordingCursor();
 }
 
 void App::UpdateRecordingCursor() {
-    if (!hwnd_ || state_ != AppState::Recording || !keepCursorInWindow_ || GetForegroundWindow() != hwnd_) {
+    const HWND target=inputEngine_ && inputEngine_->ForegroundTestWindow() ? inputEngine_->ForegroundTestWindow() : hwnd_;
+    if (!target || state_ != AppState::Recording || !keepCursorInWindow_ || GetForegroundWindow() != target) {
         ReleaseRecordingCursor();
         return;
     }
     RECT client{};
     POINT origin{};
-    if (!GetClientRect(hwnd_, &client) || !ClientToScreen(hwnd_, &origin) ||
+    if (!GetClientRect(target, &client) || !ClientToScreen(target, &origin) ||
         client.right <= client.left || client.bottom <= client.top) {
         ReleaseRecordingCursor();
         return;

@@ -41,6 +41,9 @@ public:
     bool SetRawCapture(bool enabled);
     bool IsRawCapture() const { return rawCapture_.load(); }
     bool TakeStopClick() { return stopClick_.exchange(false); }
+    bool BeginForegroundTest(int64_t startTimestamp);
+    bool EndForegroundTest(HWND returnWindow = nullptr);
+    HWND ForegroundTestWindow() const { return foregroundTestActive_ ? foregroundHwnd_.load() : nullptr; }
 
     // Get event rate statistics (events per second)
     double GetEventRateA() const { return eventRateA_; }
@@ -68,6 +71,14 @@ private:
 
     // Hidden window for raw input (owned by input thread)
     HWND inputHwnd_ = nullptr;
+    std::atomic<HWND> foregroundHwnd_{nullptr};
+    std::atomic<bool> foregroundTestActive_{false};
+    std::atomic<int64_t> foregroundTestStart_{0};
+    bool SwitchForegroundTest(bool enabled, HWND returnWindow);
+    void PaintForegroundTest(HWND hwnd);
+    decltype(&SetForegroundWindow) foregroundSetter_ = &SetForegroundWindow;
+    decltype(&GetForegroundWindow) foregroundGetter_ = &GetForegroundWindow;
+    decltype(&ShowWindow) windowShower_ = &ShowWindow;
 
     // Input thread
     std::thread inputThread_;

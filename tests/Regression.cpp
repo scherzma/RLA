@@ -155,6 +155,12 @@ struct InputEngineRegressionAccess {
     inline static DWORD registrationFlags = 0;
     inline static bool failRegistration = false;
     inline static RAWINPUT primary{};
+    inline static HWND testForeground=nullptr;
+    static BOOL WINAPI SetTestForeground(HWND hwnd) { testForeground=hwnd; return TRUE; }
+    static HWND WINAPI GetTestForeground() { return testForeground; }
+    static BOOL WINAPI DoNotShowWindow(HWND,int) { return TRUE; }
+    static BOOL WINAPI DenyForeground(HWND) { return FALSE; }
+
     static UINT WINAPI ReadOne(HRAWINPUT, UINT command, LPVOID output, PUINT size, UINT headerSize) {
         Check(command == RID_INPUT && headerSize == sizeof(RAWINPUTHEADER) && *size >= sizeof(RAWINPUT), "Primary report read must use the native layout");
         std::memcpy(output, &primary, sizeof(primary)); *size = sizeof(primary); return sizeof(primary);
@@ -301,6 +307,36 @@ struct InputEngineRegressionAccess {
               "Windows must accept raw-only mouse registration");
         Check(engine->SetRawCapture(false) && registeredFlags() == RIDEV_INPUTSINK,
               "Windows must restore ordinary mouse registration");
+        // Exercise the real input-thread target switch without showing a window
+        // or taking focus from the user's active application.
+        engine->windowShower_=&DoNotShowWindow;
+        engine->foregroundGetter_=&GetTestForeground;
+        engine->foregroundSetter_=&SetTestForeground;
+        LARGE_INTEGER start; QueryPerformanceCounter(&start);
+        Check(engine->BeginForegroundTest(start.QuadPart),"Foreground target switch must succeed");
+        const HWND target=engine->ForegroundTestWindow();
+        Check(target && target!=engine->inputHwnd_ &&
+            GetWindowThreadProcessId(target,nullptr)==GetWindowThreadProcessId(engine->inputHwnd_,nullptr),
+            "Both capture targets must retain the same input thread");
+        auto registeredTarget=[]() {
+            RAWINPUTDEVICE devices[4]{}; UINT count=4;
+            Check(GetRegisteredRawInputDevices(devices,&count,sizeof(RAWINPUTDEVICE))!=UINT_MAX,"Read registration target");
+            for (UINT i=0;i<count;++i) if (devices[i].usUsagePage==1 && devices[i].usUsage==2) return devices[i].hwndTarget;
+            return HWND(nullptr);
+        };
+        Check(registeredTarget()==target && registeredFlags()==RIDEV_INPUTSINK,"Foreground test must change only the registration target");
+        Check(engine->SetRawCapture(true) && registeredTarget()==target,"Raw capture changes must retain the test target");
+        SendMessageW(target,WM_KEYDOWN,VK_ESCAPE,0);
+        Check(engine->TakeStopClick(),"Escape in the test window must request stop");
+        SendMessageW(target,WM_ACTIVATE,WA_INACTIVE,0);
+        Check(engine->TakeStopClick(),"Leaving the test window must request stop");
+        SendMessageW(target,WM_CLOSE,0,0);
+        Check(engine->TakeStopClick() && IsWindow(target),"Closing the test window must request stop without destroying the input thread");
+        Check(engine->EndForegroundTest() && !engine->ForegroundTestWindow() && registeredTarget()==engine->inputHwnd_,"Stop must restore the hidden target");
+        engine->foregroundSetter_=&DenyForeground; testForeground=nullptr;
+        Check(!engine->BeginForegroundTest(start.QuadPart) && !engine->ForegroundTestWindow() && registeredTarget()==engine->inputHwnd_,
+            "Denied activation must roll back capture registration");
+        Check(engine->SetRawCapture(false),"Tests must restore normal mouse controls");
         Sleep(20);
         engine.reset();
         std::cout << "Buffered capture: 16000 reports preserved; resize, errors, overflow and shutdown passed.\n";
@@ -1178,7 +1214,7 @@ int main(int argc, char** argv) {
         session.endTimestamp = 110;
         session.qpcFrequency = 1000;
         session.capture = {true, 16000, 12000, 64, 1, 2, ERROR_ACCESS_DENIED, true};
-        session.captureTestMode=2; session.testCursorConfined=true; session.testStartDrops=1; session.testStartErrors=1;
+        session.captureTestMode=3; session.testCursorConfined=true; session.testStartDrops=1; session.testStartErrors=1;
         session.eventsA = { {nullptr, 101, 300000, 400000},
                             {nullptr, 102, (std::numeric_limits<int32_t>::min)(), 0} };
         DataStore store;
@@ -1191,7 +1227,7 @@ int main(int argc, char** argv) {
               "Capture diagnostics must survive JSON round trip");
         Check(loaded && loaded->eventsA.size() == 2 && loaded->eventsA[1].deltaX == session.eventsA[1].deltaX,
               "JSON round trip must preserve movement values");
-        Check(loaded->captureTestMode==2 && loaded->testCursorConfined && loaded->testStartDrops==1 && loaded->testStartErrors==1,"Test settings must survive save/load");
+        Check(loaded->captureTestMode==3 && loaded->testCursorConfined && loaded->testStartDrops==1 && loaded->testStartErrors==1,"Test settings must survive save/load");
         AppRegressionAccess::Run(*loaded);
         Check(store.ExportToCsv(csv, *loaded), "CSV export failed");
         std::ifstream csvInput(csv);

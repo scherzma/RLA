@@ -34,7 +34,7 @@ static T ReadInteger(const json& value) {
 }
 
 static void ValidateSession(const RecordingSession& session) {
-    if (session.captureTestMode<0 || session.captureTestMode>2) throw std::runtime_error("Invalid capture test mode");
+    if (session.captureTestMode<0 || session.captureTestMode>3) throw std::runtime_error("Invalid capture test mode");
     if (!std::isfinite(session.qpcFrequency) || session.qpcFrequency < 1.0 ||
         session.qpcFrequency >= std::ldexp(1.0, 63) ||
         std::floor(session.qpcFrequency) != session.qpcFrequency) {
@@ -231,7 +231,7 @@ std::optional<RecordingSession> DataStore::LoadFromJson(const std::filesystem::p
         if (j.contains("captureTest")) {
             const auto& test=j.at("captureTest");
             session.captureTestMode=ReadInteger<int>(test.at("mode"));
-            if (ReadInteger<int>(test.at("version"))!=1 || session.captureTestMode<1 || session.captureTestMode>2)
+            if (ReadInteger<int>(test.at("version"))!=1 || session.captureTestMode<1 || session.captureTestMode>3)
                 throw std::runtime_error("Unsupported capture test");
             session.testCursorConfined=test.at("cursorConfined").get<bool>();
             session.testStartDrops=ReadInteger<uint64_t>(test.at("startDrops"));

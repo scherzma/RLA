@@ -49,7 +49,7 @@ private:
     void RenderDevicePanel();
     void RenderControlPanel();
     void RenderCaptureTest();
-    int captureTestChoice_ = 2;
+    int captureTestChoice_ = 3;
     void RenderPlotPanel();
     void RenderScaleControls();
     void ApplyAutoScaleB();

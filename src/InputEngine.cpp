@@ -4,8 +4,10 @@
 #include <climits>
 #include <cstddef>
 #include <cstring>
+#include <cwchar>
 
 namespace RLA {
+namespace { constexpr UINT ConfigureForegroundTest=WM_APP+81; }
 
 InputEngine::InputEngine() {
     LARGE_INTEGER freq;
@@ -63,18 +65,40 @@ LRESULT CALLBACK InputEngine::InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
     }
     auto* engine = reinterpret_cast<InputEngine*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
+        case ConfigureForegroundTest:
+            return engine && engine->SwitchForegroundTest(wParam!=0,reinterpret_cast<HWND>(lParam));
+        case WM_TIMER:
+            if (engine && hwnd==engine->foregroundHwnd_) { InvalidateRect(hwnd,nullptr,FALSE); return 0; }
+            break;
+        case WM_PAINT:
+            if (engine && hwnd==engine->foregroundHwnd_) { engine->PaintForegroundTest(hwnd); return 0; }
+            break;
+        case WM_LBUTTONDOWN:
+            if (engine && hwnd==engine->foregroundHwnd_) { engine->stopClick_=true; return 0; }
+            break;
+        case WM_KEYDOWN:
+            if (engine && hwnd==engine->foregroundHwnd_ && wParam==VK_ESCAPE) { engine->stopClick_=true; return 0; }
+            break;
+        case WM_CLOSE:
+            if (engine && hwnd==engine->foregroundHwnd_) { engine->stopClick_=true; return 0; }
+            break;
+        case WM_ACTIVATE:
+            if (engine && hwnd==engine->foregroundHwnd_ && engine->foregroundTestActive_ && LOWORD(wParam)==WA_INACTIVE)
+                engine->stopClick_=true;
+            break;
         case WM_INPUT:
             // GetMessage removed this one report. Read it before draining the
             // remaining queue, then let Windows clean up its message handle.
             if (engine) { engine->ReadRawInput(reinterpret_cast<HRAWINPUT>(lParam)); engine->DrainRawInput(); }
             return DefWindowProcW(hwnd, msg, wParam, lParam);
         case WM_DESTROY:
-            PostQuitMessage(0);
+            if (engine && hwnd==engine->inputHwnd_) PostQuitMessage(0);
             return 0;
 
         default:
             return DefWindowProc(hwnd, msg, wParam, lParam);
     }
+    return DefWindowProcW(hwnd,msg,wParam,lParam);
 }
 
 void InputEngine::InputThreadFunc() {
@@ -143,6 +167,8 @@ void InputEngine::InputThreadFunc() {
     }
 
     // Cleanup
+    foregroundTestActive_=false;
+    if (foregroundHwnd_) { DestroyWindow(foregroundHwnd_); foregroundHwnd_=nullptr; }
     UnregisterRawInput();
     if (inputHwnd_) {
         DestroyWindow(inputHwnd_);
@@ -167,7 +193,8 @@ bool InputEngine::RegisterRawInput(HWND hwnd, bool noLegacy) {
 bool InputEngine::SetRawCapture(bool enabled) {
     if (rawCapture_.load() == enabled) return true;
     if (!initialized_ || shouldStop_) return false;
-    if (!RegisterRawInput(inputHwnd_, enabled)) {
+    const HWND target=ForegroundTestWindow();
+    if (!RegisterRawInput(target ? target : inputHwnd_, enabled)) {
         lastError_ = GetLastError();
         ++readErrors_;
         return false;
@@ -175,6 +202,72 @@ bool InputEngine::SetRawCapture(bool enabled) {
     stopClick_ = false;
     rawCapture_ = enabled;
     return true;
+}
+
+bool InputEngine::BeginForegroundTest(int64_t startTimestamp) {
+    if (!initialized_ || shouldStop_) return false;
+    foregroundTestStart_=startTimestamp;
+    DWORD_PTR result=0;
+    return SendMessageTimeoutW(inputHwnd_,ConfigureForegroundTest,TRUE,0,SMTO_ABORTIFHUNG,2000,&result) && result!=0;
+}
+
+bool InputEngine::EndForegroundTest(HWND returnWindow) {
+    if (!initialized_ || shouldStop_) return !foregroundTestActive_;
+    DWORD_PTR result=0;
+    return SendMessageTimeoutW(inputHwnd_,ConfigureForegroundTest,FALSE,reinterpret_cast<LPARAM>(returnWindow),SMTO_ABORTIFHUNG,2000,&result) && result!=0;
+}
+
+bool InputEngine::SwitchForegroundTest(bool enabled, HWND returnWindow) {
+    // Both capture windows belong to this thread. Parser state and the SPSC
+    // ring buffer therefore retain one producer in both test modes.
+    if (enabled) {
+        if (!foregroundHwnd_) {
+            foregroundHwnd_=CreateWindowExW(0,L"RLA_InputWindowClass",L"RLA - Foreground capture test",
+                WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU, CW_USEDEFAULT,CW_USEDEFAULT,720,300,
+                nullptr,nullptr,GetModuleHandleW(nullptr),this);
+        }
+        const HWND target=foregroundHwnd_;
+        if (!target || !RegisterRawInput(target,rawCapture_)) return false;
+        foregroundTestActive_=true;
+        windowShower_(target,SW_SHOW);
+        foregroundSetter_(target);
+        if (foregroundGetter_()!=target) {
+            RegisterRawInput(inputHwnd_,rawCapture_);
+            foregroundTestActive_=false;
+            windowShower_(target,SW_HIDE);
+            return false;
+        }
+        if (!SetTimer(target,1,100,nullptr)) {
+            RegisterRawInput(inputHwnd_,rawCapture_);
+            foregroundTestActive_=false;
+            windowShower_(target,SW_HIDE);
+            return false;
+        }
+        InvalidateRect(target,nullptr,TRUE);
+        return true;
+    }
+    if (!RegisterRawInput(inputHwnd_,rawCapture_)) return false;
+    const HWND target=foregroundHwnd_;
+    const bool restore=target && foregroundGetter_()==target;
+    foregroundTestActive_=false;
+    if (target) { KillTimer(target,1); windowShower_(target,SW_HIDE); }
+    if (restore && returnWindow) foregroundSetter_(returnWindow);
+    return true;
+}
+
+void InputEngine::PaintForegroundTest(HWND hwnd) {
+    PAINTSTRUCT paint{}; const HDC dc=BeginPaint(hwnd,&paint);
+    RECT rect{}; GetClientRect(hwnd,&rect); FillRect(dc,&rect,GetSysColorBrush(COLOR_WINDOW));
+    const auto oldFont=SelectObject(dc,GetStockObject(DEFAULT_GUI_FONT));
+    SetTextColor(dc,GetSysColor(COLOR_WINDOWTEXT)); SetBkMode(dc,TRANSPARENT);
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    const double elapsed=(now.QuadPart-foregroundTestStart_)*1000.0/qpcFrequency_;
+    const wchar_t* stage=elapsed<3000 ? L"GET READY" : elapsed<8000 ? L"MOVE A ONLY" : elapsed<13000 ? L"MOVE BOTH MICE" : L"MOVE A ONLY AGAIN";
+    const double boundary=elapsed<3000 ? 3000 : elapsed<8000 ? 8000 : elapsed<13000 ? 13000 : 18000;
+    wchar_t text[512]{};
+    swprintf_s(text,L"Foreground capture test - graphs off\n\n%s\n%.1f seconds remaining in this stage\n\nKeep this window in front. Click or press Esc to stop.\nThe test stops and saves automatically after 18 seconds.",stage,(std::max)(0.0,(boundary-elapsed)/1000.0));
+    InflateRect(&rect,-20,-20); DrawTextW(dc,text,-1,&rect,DT_CENTER|DT_WORDBREAK);
+    SelectObject(dc,oldFont); EndPaint(hwnd,&paint);
 }
 
 void InputEngine::UnregisterRawInput() {

@@ -24,13 +24,15 @@ Completed recordings with movement are saved automatically to `%LOCALAPPDATA%\RL
 
 ## Capture test
 
-Use **Capture test** beside the recording controls to compare **Live plot (baseline)** with **Capture only (no plot processing)**. Close other RLA instances first; each instance registers its own mouse listener. Assign both mice first. Run one test in each mode, with the same polling rates, DPI, movement speed, USB ports and capture options. Keep RLA in the foreground.
+Use **Capture test** beside the recording controls to compare **Live plot (baseline)** with **Hidden window / capture only**. Close other RLA instances first; each instance registers its own mouse listener. Assign both mice first. Run one test in each mode, with the same polling rates, DPI, movement speed, USB ports and capture options. Keep RLA in the foreground.
 
 Each run has a three-second preparation countdown, then five seconds each of **A only**, **both mice**, and **A only again**. The run stops automatically at 18 seconds. Click or Esc can stop raw capture early. The result table counts movement events in seconds 4–7.5, 9–12.5 and 14–17.5, leaving time to change movement between stages. Incomplete stages are not reported as complete results.
 
 Capture-only mode skips live movement-vector preparation and all graph processing while recording. The UI still processes controls and drains the input queue. After stop, it restores the plot from the unchanged events. Test mode, cursor confinement and starting error counters are stored in the autosaved JSON. Tests do not update detected mouse rates or enter latency rankings. Loading a test restores its summary.
 
-If capture-only performs better, live display work contributes to the difference. If both modes show the drop, that does not prove a Windows fault: this test keeps the same hidden-window capture path in both runs. It measures application movement events, not USB polling.
+**Foreground window / capture only** opens a separate top-level window on the same dedicated input thread. Follow its stage instructions. It uses the same Raw Input reader and registration flags, with the foreground window as the target. Esc, close, or loss of focus ends the test; normal capture registration is restored on stop. If Windows denies activation, RLA reports failure instead of running a hidden test under the foreground label. Both capture-only modes skip graph processing. Mode 3 in the saved test metadata identifies this foreground test. See [Microsoft: Raw Input registration](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawinputdevice) and [foreground activation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow).
+
+If capture-only performs better, live display work contributes to the difference. If both modes show the drop, that does not prove a Windows fault: the first two modes keep the same hidden-window capture path. Compare mode 2 with mode 3 to test the window target separately. It measures application movement events, not USB polling.
 
 ## Mice and ranking
 
