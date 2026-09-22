@@ -35,6 +35,7 @@ public:
     ID3D11Device* GetDevice() const { return device_; }
 
 private:
+    friend struct RendererRegressionAccess;
     bool CreateDeviceAndSwapChain(HWND hwnd, int width, int height);
     bool CreateRenderTarget();
     void CleanupRenderTarget();
@@ -51,6 +52,8 @@ private:
 
     int width_ = 0;
     int height_ = 0;
+    int pendingWidth_ = 0, pendingHeight_ = 0;
+    HRESULT lastPresent_ = S_OK;
 };
 
 } // namespace RLA

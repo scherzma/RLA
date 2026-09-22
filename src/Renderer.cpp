@@ -176,6 +176,17 @@ void Renderer::Shutdown() {
 }
 
 void Renderer::BeginFrame() {
+    // DXGI can dispatch window messages inside Present. Never resize buffers
+    // from that reentrant message handler; apply the request between frames.
+    if (pendingWidth_ > 0 && pendingHeight_ > 0) {
+        const int width=pendingWidth_, height=pendingHeight_;
+        pendingWidth_=pendingHeight_=0;
+        deviceContext_->OMSetRenderTargets(0,nullptr,nullptr);
+        CleanupRenderTarget();
+        const HRESULT result=swapChain_->ResizeBuffers(0,width,height,DXGI_FORMAT_UNKNOWN,0);
+        if (SUCCEEDED(result)) { width_=width; height_=height; }
+        CreateRenderTarget();
+    }
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -184,26 +195,24 @@ void Renderer::BeginFrame() {
 void Renderer::EndFrame() {
     ImGui::Render();
 
+    if (!renderTargetView_) return;
+
     const float clearColor[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
     deviceContext_->OMSetRenderTargets(1, &renderTargetView_, nullptr);
     deviceContext_->ClearRenderTargetView(renderTargetView_, clearColor);
 
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
-    swapChain_->Present(1, 0); // VSync enabled
+    // Keep the window thread available when the presentation queue is full.
+    // The main loop limits frame rate independently of this graphics call.
+    lastPresent_=swapChain_->Present(1, DXGI_PRESENT_DO_NOT_WAIT);
 }
 
 void Renderer::OnResize(int width, int height) {
     if (!initialized_ || width == 0 || height == 0) return;
 
-    width_ = width;
-    height_ = height;
-
-    CleanupRenderTarget();
-
-    swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-
-    CreateRenderTarget();
+    pendingWidth_=width;
+    pendingHeight_=height;
 }
 
 } // namespace RLA

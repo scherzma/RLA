@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <format>
 
 namespace RLA {
 namespace {
@@ -23,8 +24,12 @@ struct Curve {
     std::vector<double> x, y, magnitude, smooth;
     std::vector<size_t> invalid;
     std::vector<Minimum> minima;
+    size_t smoothingRadius = 0;
     bool Covers(size_t first, size_t last) const {
-        return last < magnitude.size() && invalid[last + 1] == invalid[first];
+        // Include every report used by the centered smoothing window. A gap
+        // just outside the fit must not leak artificial zeros into its edge.
+        return first >= smoothingRadius && first <= last && last + smoothingRadius < magnitude.size() &&
+            invalid[last + smoothingRadius + 1] == invalid[first - smoothingRadius];
     }
 };
 Curve MakeCurve(const RecordingSession& session, const std::vector<MouseEvent>& events, size_t size, double step) {
@@ -50,12 +55,15 @@ Curve MakeCurve(const RecordingSession& session, const std::vector<MouseEvent>& 
         prefix[i + 1] = prefix[i] + c.magnitude[i];
         c.invalid[i + 1] = c.invalid[i] + !covered[i];
     }
-    const size_t smoothRadius = (std::max)(size_t(1), static_cast<size_t>(std::round(0.5 / step)));
+    // Use the same centered time window for both mice. A few report intervals
+    // alone measure arrival jitter rather than the shape of a movement cycle.
+    const size_t smoothRadius = (std::max)(size_t(1), static_cast<size_t>(std::round(3.0 / step)));
+    c.smoothingRadius=smoothRadius;
     for (size_t i = 0; i < size; ++i) {
         const size_t lo = i > smoothRadius ? i - smoothRadius : 0, hi = (std::min)(size - 1, i + smoothRadius);
         c.smooth[i] = (prefix[hi + 1] - prefix[lo]) / (hi - lo + 1);
     }
-    const int radius = static_cast<int>(std::ceil(6.0 / step));
+    const int radius = static_cast<int>(std::ceil(10.0 / step));
     for (size_t i = radius; i + radius < size; ++i) {
         if (c.smooth[i] > c.smooth[i - 1] || c.smooth[i] >= c.smooth[i + 1] || !c.Covers(i - radius, i + radius)) continue;
         const double shoulder = (std::min)(c.smooth[i - radius], c.smooth[i + radius]);
@@ -66,7 +74,7 @@ Curve MakeCurve(const RecordingSession& session, const std::vector<MouseEvent>& 
         const int n = 2 * radius + 1;
         for (int j = -radius; j <= radius; ++j) {
             const double x = double(j) / radius;
-            const double v = std::pow(c.magnitude[i + j] / shoulder, 2);
+            const double v = std::pow(c.smooth[i + j] / shoulder, 2);
             x2 += x*x; x4 += x*x*x*x; y += v; xy += x*v; x2y += x*x*v; yy += v*v;
         }
         const double a = (x2y - x2 * y / n) / (x4 - x2 * x2 / n), b = xy / x2;
@@ -176,7 +184,10 @@ LatencyFit Analyzer::FitLatency(const RecordingSession& session, int featureMode
                 add(ca.time,cb.time,rising?LatencyFeature::Rising:LatencyFeature::Falling);
         }
     }
-    if (fit.matches.size()<3) return fit;
+    if (fit.matches.size()<3) {
+        fit.message=std::format("No reliable estimate: {} candidate pairs, {} accepted features. Shape, direction, or feature-quality checks failed.",fit.candidatePairs,fit.matches.size());
+        return fit;
+    }
     std::vector<double> differences;
     for (const auto& match:fit.matches) differences.push_back(match.differenceMs);
     const double middle=Median(differences);
@@ -197,7 +208,10 @@ LatencyFit Analyzer::FitLatency(const RecordingSession& session, int featureMode
         votes.push_back(Median(cycle)); i=j;
     }
     fit.matchedCycles=votes.size();
-    if (votes.size()<3) return fit;
+    if (votes.size()<3) {
+        fit.message=std::format("Only {} matching cycles passed. At least three are required.",votes.size());
+        return fit;
+    }
     fit.differenceMs=Median(votes);
     deviations.clear();
     for (const auto& match:fit.matches) deviations.push_back(std::abs(match.differenceMs-fit.differenceMs));

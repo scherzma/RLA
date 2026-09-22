@@ -1,5 +1,6 @@
 #include "src/App.h"
 #include "src/WindowMessages.h"
+#include "src/ResponsivenessMonitor.h"
 #include <nlohmann/json.hpp>
 #include <cmath>
 #include <fstream>
@@ -15,6 +16,48 @@
 
 static void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+namespace RLA {
+struct RendererRegressionAccess {
+    static void Run() {
+        WNDCLASSW wc{}; wc.lpfnWndProc=DefWindowProcW; wc.hInstance=GetModuleHandleW(nullptr); wc.lpszClassName=L"RLA_RenderCheck";
+        RegisterClassW(&wc);
+        HWND window=CreateWindowW(wc.lpszClassName,L"Render test",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,wc.hInstance,nullptr);
+        Check(window!=nullptr,"Renderer test window must initialize");
+        {
+            Renderer renderer; Check(renderer.Initialize(window,640,480),"Native renderer must initialize");
+            ImGui::GetIO().IniFilename=nullptr;
+            for (int frame=0;frame<12;++frame) {
+                const int previous=renderer.width_, width=frame%2 ? 800 : 640;
+                renderer.OnResize(width+20,480); renderer.OnResize(width,480);
+                Check(renderer.width_==previous && renderer.pendingWidth_==width,"Resize notifications must defer and coalesce graphics work");
+                renderer.BeginFrame();
+                Check(renderer.width_==width && renderer.renderTargetView_,"Frame boundary must apply the pending resize");
+                ImGui::Begin("Render check"); ImGui::TextUnformatted("Frame"); ImGui::End(); renderer.EndFrame();
+                Check(SUCCEEDED(renderer.lastPresent_) || renderer.lastPresent_==DXGI_ERROR_WAS_STILL_DRAWING,"Nonblocking presentation must be supported by the swap chain");
+            }
+        }
+        const auto directory=std::filesystem::temp_directory_path()/(L"RLA-monitor-test-"+std::to_wstring(GetCurrentProcessId()));
+        {
+            ResponsivenessMonitor monitor(window,directory,250);
+            monitor.Checkpoint("nested message loop test");
+            // Emulate a driver/modal loop that answers messages but produces no frames.
+            const auto end=GetTickCount64()+2200;
+            while (GetTickCount64()<end) {
+                MSG msg{}; while (PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
+                Sleep(5);
+            }
+        }
+        const auto log=directory/(L"hang-"+std::to_wstring(GetCurrentProcessId())+L".txt");
+        std::ifstream input(log); std::string contents((std::istreambuf_iterator<char>(input)),{}); input.close();
+        Check(contents.find("nested message loop test")!=std::string::npos && contents.find("window answers messages")!=std::string::npos,
+              "Stalled frames must be logged even while the window responds to messages");
+        std::filesystem::remove(log); std::filesystem::remove(directory);
+        DestroyWindow(window); UnregisterClassW(wc.lpszClassName,wc.hInstance);
+        std::cout<<"Native deferred resize, nonblocking presentation and stalled-frame diagnostics passed.\n";
+    }
+};
 }
 
 static void RunWindowMessageChecks() {
@@ -292,8 +335,12 @@ struct AppRegressionAccess {
         Check(window != nullptr, "Soak window must initialize");
         {
             App app; Check(app.Initialize(window,1280,900), "Soak app must initialize");
+            if (app.libraryLock_) { ReleaseMutex(app.libraryLock_); CloseHandle(app.libraryLock_); app.libraryLock_=nullptr; }
+            app.libraryReadOnly_=true;
             ImGui::GetIO().IniFilename=nullptr;
             app.currentSession_=session; app.RebuildPlotData(); app.state_=AppState::Ready;
+            app.mouseLibrary_.autoRank=false; // Soak tests must not change the user's library.
+            app.ApplyAutoScaleB(); app.StartLatencyAnalysis();
             const auto start=std::chrono::steady_clock::now(); int reported=-1; size_t frames=0;
             while (std::chrono::steady_clock::now()-start<std::chrono::seconds(seconds)) {
                 MSG message{};
@@ -303,10 +350,12 @@ struct AppRegressionAccess {
                 const int elapsed=static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now()-start).count());
                 if (elapsed/30 != reported) {
                     reported=elapsed/30;
+                    app.OnResize(reported%2 ? 1200 : 1280,900);
+                    Check(app.latencyFit_.valid || app.latencyTask_.valid(),"Replay latency analysis must produce a result");
                     Check(InputEngineRegressionAccess::Responsive(*app.inputEngine_), "Capture thread stopped responding during soak");
                     std::cout << "Soak " << elapsed << " s, " << frames << " frames, input responsive.\n" << std::flush;
                 }
-                Sleep(5); // UI test pacing only; the capture thread has no sleep.
+                Sleep(16); // UI test pacing only; the capture thread has no sleep.
             }
         }
         DestroyWindow(window); UnregisterClassW(wc.lpszClassName,wc.hInstance);
@@ -808,6 +857,30 @@ static void RunLatencyChecks() {
     Check(!Analyzer::FitLatency(session).valid, "Latency requires two mice");
     session = LatencySession(); session.eventsB[5].timestamp = 0;
     Check(!Analyzer::FitLatency(session).valid, "Unordered events must not be fitted");
+    for (double delay : {-1.625,0.0,2.75}) {
+        auto noisy=LatencySession(delay);
+        for (auto* events : {&noisy.eventsA,&noisy.eventsB}) {
+            std::vector<MouseEvent> reports;
+            int64_t previous=noisy.startTimestamp;
+            for (size_t i=0;i<events->size();++i) {
+                auto e=(*events)[i];
+                e.deltaX=static_cast<int32_t>(std::llround(e.deltaX*0.12));
+                // Small counts, arrival jitter and occasional combined reports.
+                if (i%13==0 && i+1<events->size()) {
+                    const auto next=(*events)[++i]; e.deltaX+=static_cast<int32_t>(std::llround(next.deltaX*0.12)); e.timestamp=next.timestamp;
+                }
+                e.timestamp+=static_cast<int64_t>(i*37%151)-75;
+                e.timestamp=(std::max)(e.timestamp,previous+1); previous=e.timestamp;
+                if (e.deltaX) reports.push_back(e);
+            }
+            *events=std::move(reports);
+        }
+        for (int mode : {0,1,2}) {
+            const auto result=Analyzer::FitLatency(noisy,mode);
+            Check(result.valid && result.matchedCycles>=3 && std::abs(result.differenceMs-delay)<0.3,
+                  "Quantized, jittered reports must retain a known latency without removing real shifts");
+        }
+    }
 }
 
 static void RunMouseLibraryChecks() {
@@ -949,7 +1022,9 @@ static void RunAutosaveChecks() {
 int main(int argc, char** argv) {
     try {
         if (argc > 1 && std::string_view(argv[1]) == "--soak") {
-            RLA::AppRegressionAccess::RunSoak(LatencySession(), argc > 2 ? std::stoi(argv[2]) : 360); return 0;
+            auto session=LatencySession();
+            if (argc>3) { RLA::DataStore store; auto loaded=store.LoadFromJson(argv[3]); Check(loaded.has_value(),"Could not load soak recording"); session=std::move(*loaded); }
+            RLA::AppRegressionAccess::RunSoak(session, argc > 2 ? std::stoi(argv[2]) : 360); return 0;
         }
         // Optional targeted check on a local recording. No recording is copied
         // into the repository. The expected manual scale is supplied by the user.
@@ -983,6 +1058,7 @@ int main(int argc, char** argv) {
         }
         RLA::InputEngineRegressionAccess::Run();
         RunWindowMessageChecks();
+        RLA::RendererRegressionAccess::Run();
         RunLatencyChecks();
         RunMouseLibraryChecks();
         RunAutosaveChecks();

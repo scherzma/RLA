@@ -136,6 +136,7 @@ int WINAPI WinMain(
     MSG msg{};
     {
         RLA::ResponsivenessMonitor monitor(hwnd);
+        ULONGLONG nextFrame=0;
         while (msg.message != WM_QUIT) {
             monitor.Checkpoint("message dispatch");
             if (!RLA::PumpWindowMessages(msg,
@@ -149,6 +150,13 @@ int WINAPI WinMain(
                 break;
             }
 
+            const auto now=GetTickCount64();
+            if (now<nextFrame) {
+                monitor.Checkpoint("frame pacing");
+                MsgWaitForMultipleObjectsEx(0,nullptr,static_cast<DWORD>(nextFrame-now),QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+                continue;
+            }
+            nextFrame=now+16;
             // Update and render
             monitor.Checkpoint("input and background results");
             g_app->Update();
