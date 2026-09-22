@@ -107,9 +107,10 @@ private:
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
     int connectionIndex_ = 1, setupRate_ = 0;
-    bool showLibrary_ = true;
+    bool showLibrary_ = false;
     int libraryPage_ = 0; // 0: device setup, 1: rankings
     bool showAllLatencyMarkers_ = false;
+    bool highlightLatencyMatch_ = false;
     bool fitMovementView_ = false;
     HANDLE libraryLock_ = nullptr;
 
@@ -130,7 +131,6 @@ private:
     std::future<LatencyFit> latencyTask_;
     uint64_t sessionRevision_ = 0, latencyRevision_ = 0;
     int latencyMode_ = 2;
-    bool showLatencyMarkers_ = true;
     int selectedLatencyMatch_ = -1;
     bool focusLatencyMatch_ = false;
 
@@ -192,6 +192,7 @@ private:
         MovementKey key{};
         bool valid=false;
         size_t builds=0;
+        std::chrono::steady_clock::time_point updatedAt{};
         std::vector<double> times, values;
     };
     MovementCache movementA_, movementB_;

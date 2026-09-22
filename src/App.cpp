@@ -179,27 +179,18 @@ void App::RenderMainWindow() {
         ImGui::EndMenuBar();
     }
 
-    if (ImGui::RadioButton("1. Setup",showLibrary_ && libraryPage_==0)) { showLibrary_=true; libraryPage_=0; }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("2. Record & analyze",!showLibrary_)) showLibrary_=false;
-    ImGui::SameLine();
-    if (ImGui::RadioButton("3. Rankings",showLibrary_ && libraryPage_==1)) { showLibrary_=true; libraryPage_=1; }
+    RenderDevicePanel();
+    RenderControlPanel();
     ImGui::Separator();
-    if (!showLibrary_ || state_==AppState::Recording) RenderControlPanel();
     if (showLibrary_) {
+        if (ImGui::Button("Back to recording")) showLibrary_=false;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Mouse library",libraryPage_==0)) libraryPage_=0;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Rankings",libraryPage_==1)) libraryPage_=1;
         ImGui::BeginChild("Mouse library page",ImVec2(0,ImGui::GetContentRegionAvail().y-ImGui::GetFrameHeightWithSpacing()));
-        if (libraryPage_==0) {
-            ImGui::SeparatorText("Assign the two mice");
-            ImGui::TextWrapped("Choose Assign, then move only that mouse. A is the reference; B is the mouse to compare.");
-            RenderDevicePanel();
-        }
         RenderMouseLibrary(); ImGui::EndChild();
-    } else {
-        if (!deviceManager_->IsMouseAAssigned() && currentSession_.eventsA.empty()) {
-            ImGui::TextWrapped("Start in Setup to assign your mice. You can also load a saved recording from File.");
-        }
-        if (showPlotWindow_) RenderPlotPanel();
-    }
+    } else if (showPlotWindow_) RenderPlotPanel();
 
     RenderStatusBar();
 
@@ -237,6 +228,12 @@ void App::RenderDevicePanel() {
                 statusMessage_ = "Wiggle the REFERENCE mouse to assign it";
             }
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Mouse settings##A")) ImGui::OpenPopup("Reference mouse settings");
+        if (ImGui::BeginPopup("Reference mouse settings")) {
+            RenderDeviceBinding("Reference A",deviceA);
+            ImGui::EndPopup();
+        }
     }
     ImGui::EndGroup();
 
@@ -271,6 +268,12 @@ void App::RenderDevicePanel() {
             }
             if (!canAssign) ImGui::EndDisabled();
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Mouse settings##B")) ImGui::OpenPopup("Test mouse settings");
+        if (ImGui::BeginPopup("Test mouse settings")) {
+            RenderDeviceBinding("Test B",deviceB);
+            ImGui::EndPopup();
+        }
     }
     ImGui::EndGroup();
 
@@ -284,6 +287,8 @@ void App::RenderDevicePanel() {
         }
     }
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Library / rankings")) { showLibrary_=!showLibrary_; libraryPage_=1; }
 }
 
 void App::RenderControlPanel() {
@@ -446,16 +451,16 @@ void App::RenderLatencyControls() {
     ImGui::Text("| Spread: %.3f ms | %zu matched cycles",latencyFit_.spreadMs,latencyFit_.matchedCycles);
     ImGui::SameLine();
     if (ImGui::Button("Review / save result")) { showLibrary_=true; libraryPage_=1; }
-    ImGui::Checkbox("Show latency markers", &showLatencyMarkers_);
+    ImGui::Checkbox("Highlight selected match", &highlightLatencyMatch_);
     ImGui::SameLine();
     ImGui::Checkbox("All matches", &showAllLatencyMarkers_);
     if (!latencyFit_.matches.empty()) {
         ImGui::SameLine();
-        if (ImGui::Button("Previous")) { selectedLatencyMatch_=(selectedLatencyMatch_<=0 ? static_cast<int>(latencyFit_.matches.size()) : selectedLatencyMatch_)-1; focusLatencyMatch_=true; showLatencyMarkers_=true; }
+        if (ImGui::Button("Previous")) { selectedLatencyMatch_=(selectedLatencyMatch_<=0 ? static_cast<int>(latencyFit_.matches.size()) : selectedLatencyMatch_)-1; focusLatencyMatch_=true; }
         ImGui::SameLine();
-        if (ImGui::Button("Next")) { selectedLatencyMatch_=(selectedLatencyMatch_+1)%static_cast<int>(latencyFit_.matches.size()); focusLatencyMatch_=true; showLatencyMarkers_=true; }
+        if (ImGui::Button("Next")) { selectedLatencyMatch_=(selectedLatencyMatch_+1)%static_cast<int>(latencyFit_.matches.size()); focusLatencyMatch_=true; }
         ImGui::SameLine();
-        if (ImGui::Button("Zoom to match")) { if (selectedLatencyMatch_<0) selectedLatencyMatch_=0; focusLatencyMatch_=true; showLatencyMarkers_=true; }
+        if (ImGui::Button("Zoom to match")) { if (selectedLatencyMatch_<0) selectedLatencyMatch_=0; focusLatencyMatch_=true; }
         ImGui::SameLine();
         ImGui::Text("Match %d / %zu",selectedLatencyMatch_+1,latencyFit_.matches.size());
     }
@@ -701,7 +706,12 @@ void App::RenderPlotPanel() {
         ImGui::SameLine();
         if (ImGui::Button("Fit whole recording")) { fitMovementView_=true; focusLatencyMatch_=false; }
         ImGui::SameLine();
-        ImGui::TextDisabled("Display only; recorded data stays unchanged.");
+        if (!enableTimeBinning_ && !enableSmoothing_)
+            ImGui::TextColored(ImVec4(1,0.8f,0.3f,1),"RAW counts per report - no smoothing");
+        else {
+            ImGui::Text("Display: %s | %s",enableTimeBinning_ ? "time bins" : "per report",enableSmoothing_ ? "smoothed" : "no smoothing");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Display processing only. Recorded events and latency analysis are unchanged.");
+        }
         if (ImGui::CollapsingHeader("Advanced display settings")) {
         RenderScaleControls();
         // Velocity mode controls
@@ -799,7 +809,7 @@ void App::RenderPlotPanel() {
                 ImPlot::PlotLine(mouseB ? "Mouse B (Test)" : "Mouse A (Reference)",curve.times.data(),curve.values.data(),static_cast<int>(curve.times.size()));
             }
 
-            if (showLatencyMarkers_ && latencyFit_.valid) {
+            if ((highlightLatencyMatch_ || showAllLatencyMarkers_) && latencyFit_.valid) {
                 if (showAllLatencyMarkers_) {
                     std::vector<double> marksA,marksB;
                     for (const auto& match : latencyFit_.matches) { marksA.push_back(match.timeA); marksB.push_back(match.timeB); }
@@ -808,7 +818,7 @@ void App::RenderPlotPanel() {
                     ImPlot::SetNextLineStyle(ImVec4(1,0.55f,0.25f,0.65f),1.5f);
                     ImPlot::PlotInfLines("B matches",marksB.data(),static_cast<int>(marksB.size()));
                 }
-                if (selectedLatencyMatch_>=0 && selectedLatencyMatch_<static_cast<int>(latencyFit_.matches.size())) {
+                if (highlightLatencyMatch_ && selectedLatencyMatch_>=0 && selectedLatencyMatch_<static_cast<int>(latencyFit_.matches.size())) {
                     const auto& match=latencyFit_.matches[selectedLatencyMatch_];
                     const ImVec4 aColor(0.35f,0.8f,1,1),bColor(1,0.65f,0.25f,1);
                     ImPlot::SetNextLineStyle(aColor,3.0f);
@@ -1334,6 +1344,13 @@ const App::MovementCache& App::PrepareMovementPlot(bool mouseB) {
     const MovementKey key{sessionRevision_,events.size(),enableTimeBinning_,timeWeightedBins_,enableGapInterpolation_,enableSmoothing_,
         timeBinMs_,gapThresholdMs_,gapSampleIntervalMs_,smoothingTimeMs_,mouseB && enableYScaleB_ ? yScaleB_ : 1.0f,smoothingMode_,smoothingSamples_};
     if (cache.valid && cache.key==key) return cache;
+    // Rebuild at most 30 times per second during capture. Settings and session
+    // changes bypass this limit; stopped recordings always receive the final data.
+    const auto now=std::chrono::steady_clock::now();
+    auto previousSettings=cache.key; previousSettings.events=key.events;
+    if (state_==AppState::Recording && cache.valid && previousSettings==key &&
+        now-cache.updatedAt<std::chrono::milliseconds(33)) return cache;
+    cache.updatedAt=now;
     cache.valid=false;
     if (enableTimeBinning_) ApplyTimeBinning(events,currentSession_.startTimestamp,cache.times,cache.values,timeBinMs_);
     else {

@@ -310,6 +310,7 @@ struct InputEngineRegressionAccess {
 struct AppRegressionAccess {
     static void CheckMovementCache(const RecordingSession& session) {
         App app; app.currentSession_=session; app.RebuildPlotData();
+        Check(!app.showLibrary_ && !app.highlightLatencyMatch_,"Startup must show recording with highlights off");
         const auto original=MouseLibrary::RecordingKey(app.currentSession_);
         const auto& curve=app.PrepareMovementPlot(false);
         Check(!curve.times.empty() && curve.times.size()<session.eventsA.size(),"Default comparison must use common time bins");
@@ -328,6 +329,20 @@ struct AppRegressionAccess {
         auto changed=session; changed.eventsA[0].deltaX+=100;
         app.currentSession_=changed; app.RebuildPlotData();
         Check(app.PrepareMovementPlot(false).values.front()==app.liveVelocitiesA_.front(),"Loading an equal-length recording must invalidate the cache");
+        app.state_=AppState::Recording;
+        app.movementA_.updatedAt=std::chrono::steady_clock::now();
+        const auto liveBuilds=app.movementA_.builds;
+        auto extra=app.currentSession_.eventsA.back(); ++extra.timestamp;
+        app.currentSession_.eventsA.push_back(extra);
+        app.liveTimesA_.push_back(app.liveTimesA_.back()+0.001); app.liveVelocitiesA_.push_back(123);
+        app.PrepareMovementPlot(false);
+        Check(app.movementA_.builds==liveBuilds,"Live event changes must reuse a recent display cache");
+        app.enableSmoothing_=true; app.PrepareMovementPlot(false);
+        Check(app.movementA_.builds==liveBuilds+1,"Display setting changes must bypass the live throttle");
+        ++extra.timestamp; app.currentSession_.eventsA.push_back(extra);
+        app.liveTimesA_.push_back(app.liveTimesA_.back()+0.001); app.liveVelocitiesA_.push_back(124);
+        app.state_=AppState::Ready; app.PrepareMovementPlot(false);
+        Check(app.movementA_.key.events==app.currentSession_.eventsA.size(),"Stopping must display every final event immediately");
     }
     static void RunLibrary(RecordingSession session, const std::filesystem::path& directory) {
         App app;
@@ -432,7 +447,7 @@ struct AppRegressionAccess {
         io.DisplaySize = ImVec2(1280, 1000); io.DeltaTime = 1.0f / 60.0f;
         unsigned char* pixels; int width, height; io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
         Check(app.selectedLatencyMatch_>=0,"Analysis must select a match for inspection");
-        app.selectedLatencyMatch_ = 0; app.focusLatencyMatch_ = true;
+        app.selectedLatencyMatch_ = 0; app.focusLatencyMatch_ = true; app.highlightLatencyMatch_=true;
         const auto match = app.latencyFit_.matches.front();
         for (int frame=0; frame<2; ++frame) {
             ImGui::NewFrame(); ImGui::SetNextWindowSize(ImVec2(1280, 1000)); ImGui::Begin("Latency UI");
