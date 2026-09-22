@@ -316,7 +316,7 @@ void App::RenderMouseLibrary() {
         ImGui::TextWrapped("Analyze a recording with both mice before adding a result.");
         if (ImGui::Button("Go to analysis")) showLibrary_=false;
     } else {
-        ImGui::Text("B is %.3f ms %s than A",std::abs(latencyFit_.differenceMs),latencyFit_.differenceMs>=0 ? "later" : "earlier");
+        ImGui::TextWrapped("%s",GetLatencySummary().c_str());
     }
     if ((!currentSession_.eventsA.empty() || !currentSession_.eventsB.empty()) && ImGui::CollapsingHeader("Check recording labels and save result",ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::BeginDisabled(state_==AppState::Recording);

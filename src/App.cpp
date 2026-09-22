@@ -540,13 +540,15 @@ void App::RenderLatencyControls() {
         ImGui::SetNextItemWidth(200);
         if (ImGui::Combo("Features", &latencyMode_, "Minima\0Half-height\0Both (recommended)\0")) ResetLatencyAnalysis();
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Uses matching minima and/or half-height crossings. Needs at least three shared cycles. Positive B-A means B arrives later. Display smoothing does not change the result.");
+        ImGui::TextWrapped("Uses matching minima and/or half-height crossings. Needs at least three shared cycles. Positive B-A means B is slower than A. Display smoothing does not change the result.");
         ImGui::EndPopup();
     }
     if (!latencyFit_.message.empty() && !latencyFit_.valid) ImGui::TextWrapped("%s", latencyFit_.message.c_str());
     if (!latencyFit_.valid) return;
     if (!comparisonMessage_.empty()) ImGui::TextWrapped("%s",comparisonMessage_.c_str());
-    ImGui::TextColored(ImVec4(1.0f,0.85f,0.4f,1),"B is %.3f ms %s than A",std::abs(latencyFit_.differenceMs),latencyFit_.differenceMs>=0 ? "later" : "earlier");
+    ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.0f,0.85f,0.4f,1));
+    ImGui::TextWrapped("%s",GetLatencySummary().c_str());
+    ImGui::PopStyleColor();
     ImGui::SameLine();
     ImGui::Text("| Spread: %.3f ms | %zu matched cycles",latencyFit_.spreadMs,latencyFit_.matchedCycles);
     ImGui::SameLine();
@@ -1309,6 +1311,15 @@ void App::OnResize(int width, int height) {
     if (renderer_) {
         renderer_->OnResize(width, height);
     }
+}
+
+std::string App::GetLatencySummary() const {
+    const double difference=latencyFit_.differenceMs;
+    if (std::abs(difference)<0.0005)
+        return GetRecordingMouseName(false)+" and "+GetRecordingMouseName(true)+": difference rounds to 0.000 ms.";
+    const bool bFaster=difference<0;
+    return std::format("{} is {:.3f} ms faster than {}",GetRecordingMouseName(bFaster),
+        std::abs(difference),GetRecordingMouseName(!bFaster));
 }
 
 std::string App::GetRecordingMouseName(bool mouseB) const {
