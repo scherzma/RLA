@@ -332,10 +332,8 @@ void App::RenderMouseLibrary() {
     }
     ImGui::EndDisabled();
     ImGui::SeparatorText("Relative latency ranking");
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::Combo("Analysis method",&rankMethod_,"Minima\0Half-height\0Both\0")) rankingDirty_=true;
     if (rankingDirty_) {
-        try { ranking_=mouseLibrary_.Ranking(rankMethod_); } catch (const std::exception& e) { ranking_.clear(); libraryMessage_=e.what(); }
+        try { ranking_=mouseLibrary_.Ranking(-1); } catch (const std::exception& e) { ranking_.clear(); libraryMessage_=e.what(); }
         rankingDirty_=false;
     }
     ImGui::TextWrapped("Typical combines enabled runs. Fastest and Latest show single runs against the reference. Negative = faster; positive = slower. Order is based on Typical.");
@@ -364,7 +362,7 @@ void App::RenderMouseLibrary() {
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(row.setupId).c_str());
                 ImGui::TableNextColumn(); ImGui::Text("%+.3f",row.relativeMs-reference->relativeMs);
                 const bool isReference=row.setupId==reference->setupId;
-                const auto direct=mouseLibrary_.DirectRuns(row.setupId,reference->setupId,rankMethod_);
+                const auto direct=mouseLibrary_.DirectRuns(row.setupId,reference->setupId,-1);
                 auto resultCell=[&](const char* id,double value,const std::string& key) {
                     ImGui::TableNextColumn();
                     if (isReference) { ImGui::TextDisabled("Reference"); return; }
@@ -394,25 +392,25 @@ void App::RenderMouseLibrary() {
         ImGui::TreePop();
     }
     if (ImGui::CollapsingHeader("Saved runs",ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextWrapped("All accepted runs are retained. Most stable marks the smallest spread against the same reference and method; ties favor more cycles.");
+        ImGui::TextWrapped("All accepted runs are retained. Most stable marks the smallest spread against the same reference; ties favor more cycles. A recording counts once in rankings, with the All result preferred.");
         const auto& runs=mouseLibrary_.Comparisons();
         std::map<std::pair<std::string,std::string>,size_t> bestRuns;
         for (size_t i=0;i<runs.size();++i) {
             const auto& run=runs[i];
-            if (!run.enabled || run.method!=rankMethod_) continue;
+            if (!run.enabled) continue;
             const auto [entry,inserted]=bestRuns.emplace(std::make_pair(run.setupA,run.setupB),i);
             const auto& previous=runs[entry->second];
             if (!inserted && (run.spreadMs<previous.spreadMs || (run.spreadMs==previous.spreadMs && run.cycles>previous.cycles))) entry->second=i;
         }
         std::string openKey;
-        if (ImGui::BeginTable("Comparison history",8,ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY,ImVec2(0,230))) {
+        if (ImGui::BeginTable("Comparison history",9,ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY,ImVec2(0,230))) {
             ImGui::TableSetupColumn("Use",ImGuiTableColumnFlags_WidthFixed,35);
             ImGui::TableSetupColumn("Reference A",ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("Test B",ImGuiTableColumnFlags_WidthStretch);
-            for (const char* name : {"B-A ms","Spread ms","Cycles","Run","Remove"}) ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
+            for (const char* name : {"Method","B-A ms","Spread ms","Cycles","Run","Remove"}) ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
             ImGui::TableSetupScrollFreeze(0,1); ImGui::TableHeadersRow();
             for (size_t i=0;i<runs.size();++i) {
-                const auto& run=runs[i]; if (run.method!=rankMethod_) continue;
+                const auto& run=runs[i];
                 const auto bestEntry=bestRuns.find({run.setupA,run.setupB});
                 const bool best=bestEntry!=bestRuns.end() && bestEntry->second==i;
                 ImGui::PushID(static_cast<int>(i)); ImGui::TableNextRow(); ImGui::TableNextColumn();
@@ -421,6 +419,7 @@ void App::RenderMouseLibrary() {
                 ImGui::EndDisabled();
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(run.setupA).c_str());
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(run.setupB).c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(run.method==4 ? "All" : run.method==2 ? "Min + half" : run.method==1 ? "Half-height" : run.method==0 ? "Minima" : "Maxima");
                 ImGui::TableNextColumn(); ImGui::Text("%+.3f",run.differenceMs);
                 ImGui::TableNextColumn(); ImGui::Text("%.3f",run.spreadMs);
                 ImGui::TableNextColumn(); ImGui::Text("%zu",run.cycles);

@@ -980,7 +980,7 @@ static RLA::RecordingSession LatencySession(double delayMs = 2.75, int rateA = 8
 static void RunLatencyChecks() {
     using namespace RLA;
     AppRegressionAccess::RunLatency(LatencySession());
-    for (double delay : {2.75, -1.625, 0.0}) for (int mode : {0, 1, 2}) {
+    for (double delay : {2.75, -1.625, 0.0}) for (int mode : {0, 1, 2, 3, 4}) {
         auto session = LatencySession(delay);
         const auto fit = Analyzer::FitLatency(session, mode);
         std::cout << "Latency mode=" << mode << " expected=" << delay << " fit=" << fit.differenceMs
@@ -989,8 +989,14 @@ static void RunLatencyChecks() {
               "Latency must recover signed delay across different report rates and amplitudes");
         for (const auto& match : fit.matches) {
             Check(mode != 0 || match.feature == LatencyFeature::Minimum, "Minima mode must contain only minima");
-            Check(mode != 1 || match.feature != LatencyFeature::Minimum, "Half-height mode must contain only slopes");
+            Check(mode != 1 || match.feature == LatencyFeature::Rising || match.feature == LatencyFeature::Falling,
+                  "Half-height mode must contain only slopes");
+            Check(mode != 2 || match.feature != LatencyFeature::Maximum, "Legacy combined mode must exclude maxima");
+            Check(mode != 3 || match.feature == LatencyFeature::Maximum, "Maxima mode must contain only maxima");
         }
+        if (mode==4) Check(std::any_of(fit.matches.begin(),fit.matches.end(),[](const auto& match) {
+            return match.feature==LatencyFeature::Maximum;
+        }),"All-features mode must include maxima");
     }
     auto session = LatencySession();
     // Reject separate motion and collisions but retain clean shared cycles.
@@ -1037,10 +1043,21 @@ static void RunLatencyChecks() {
             }
             *events=std::move(reports);
         }
-        for (int mode : {0,1,2}) {
+        for (int mode : {0,1,2,4}) {
             const auto result=Analyzer::FitLatency(noisy,mode);
+            std::cout << "Noisy latency mode=" << mode << " expected=" << delay << " fit=" << result.differenceMs
+                      << " cycles=" << result.matchedCycles << " " << result.message << '\n';
             Check(result.valid && result.matchedCycles>=3 && std::abs(result.differenceMs-delay)<0.3,
                   "Quantized, jittered reports must retain a known latency without removing real shifts");
+            if (mode==4) {
+                const auto minima=std::count_if(result.matches.begin(),result.matches.end(),[](const auto& match) {
+                    return match.feature==LatencyFeature::Minimum;
+                });
+                const auto maxima=std::count_if(result.matches.begin(),result.matches.end(),[](const auto& match) {
+                    return match.feature==LatencyFeature::Maximum;
+                });
+                Check(maxima*2>=minima,"Noisy shared cycles must retain a useful number of maxima");
+            }
         }
     }
 }
@@ -1126,6 +1143,12 @@ static void RunMouseLibraryChecks() {
           "Relative ranking must solve consistent comparison paths and resist a pair outlier");
     Check(row(sa).group==row(sc).group && row(wiredB).group!=row(sa).group && std::abs(row(slowerB).relativeMs)<1e-8,
           "Disconnected comparison groups must never receive a shared rank");
+    fit.differenceMs=8;
+    Check(library.AddComparison(session,fit,4),"All-feature results must be saved beside legacy results");
+    const auto allRanks=library.Ranking(-1);
+    const auto allRow=std::find_if(allRanks.begin(),allRanks.end(),[&](const auto& value){return value.setupId==sa;});
+    Check(allRow!=allRanks.end() && allRow->recordings==5 && library.DirectRuns(sb,sa,-1).recordings==4,
+          "Combined ranking must keep legacy data and count each recording once");
     for (int rate : {125,250,500,1000,2000,4000,8000}) {
         const auto recording=LatencySession(0,rate,rate);
         std::cout << "Rate expected=" << rate << " detected=" << MouseLibrary::DetectRate(recording.eventsA,recording.qpcFrequency) << '\n';
@@ -1251,15 +1274,17 @@ int main(int argc, char** argv) {
             const auto recording = store.LoadFromJson(argv[1]);
             Check(recording.has_value(), "Could not load the supplied recording");
             if (argc > 2 && std::string_view(argv[2]) == "--latency") {
-                for (int mode : {0, 1, 2}) {
-                    const auto started = std::chrono::steady_clock::now();
-                    const auto latency = RLA::Analyzer::FitLatency(*recording, mode);
-                    std::cout << "Latency mode=" << mode << " valid=" << latency.valid << " B-A=" << latency.differenceMs
-                              << " ms MAD=" << latency.spreadMs << " bins=" << latency.binMs << " cycles=" << latency.matchedCycles
-                              << " points=" << latency.matches.size() << " candidates=" << latency.candidatePairs << " elapsed="
-                              << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-started).count() << " ms\n"
-                              << latency.message << '\n';
-                }
+                const auto started = std::chrono::steady_clock::now();
+                const auto latency = RLA::Analyzer::FitLatency(*recording);
+                std::array<size_t,4> features{};
+                for (const auto& match:latency.matches) ++features[static_cast<size_t>(match.feature)];
+                std::cout << "Latency valid=" << latency.valid << " B-A=" << latency.differenceMs
+                          << " ms MAD=" << latency.spreadMs << " bins=" << latency.binMs << " cycles=" << latency.matchedCycles
+                          << " points=" << latency.matches.size() << " candidates=" << latency.candidatePairs << " elapsed="
+                          << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-started).count() << " ms\n"
+                          << "Minimum=" << features[0] << " Falling=" << features[1]
+                          << " Rising=" << features[2] << " Maximum=" << features[3] << '\n'
+                          << latency.message << '\n';
                 return 0;
             }
             const auto fit = RLA::Analyzer::FitScaleB(*recording);

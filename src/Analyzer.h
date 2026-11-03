@@ -31,7 +31,7 @@ struct EventTiming {
     double medianMs = 0.0, p95Ms = 0.0, maxMs = 0.0;
 };
 
-enum class LatencyFeature { Minimum, Falling, Rising };
+enum class LatencyFeature { Minimum, Falling, Rising, Maximum };
 struct LatencyMatch {
     double timeA = 0, timeB = 0, differenceMs = 0, quality = 0;
     LatencyFeature feature = LatencyFeature::Minimum;
@@ -57,8 +57,8 @@ public:
 
     // Fits B to A from shared movement only. Does not change event timestamps.
     static ScaleFit FitScaleB(const RecordingSession& session);
-    // Positive B-A means B appears later. Feature mode: 0 minima, 1 slopes, 2 both.
-    static LatencyFit FitLatency(const RecordingSession& session, int featureMode = 2);
+    // Positive B-A means B appears later. Modes: 0 minima, 1 slopes, 2 both (legacy), 3 maxima, 4 all.
+    static LatencyFit FitLatency(const RecordingSession& session, int featureMode = 4);
     // Sparse bins preserve signed counts. Weighted bins estimate uniform motion
     // between nearby reports; first reports and reports after long gaps stay local.
     static std::vector<MovementBin> BinMovement(const std::vector<MouseEvent>& events,

@@ -109,7 +109,7 @@ private:
     std::deque<RecordingSession> runsToKeep_;
     std::string libraryMessage_, comparisonMessage_;
     std::vector<MouseRank> ranking_;
-    int rankMethod_ = 2, resultMethod_ = 2;
+    int resultMethod_ = 4;
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
     int connectionIndex_ = 1;
@@ -139,7 +139,6 @@ private:
     LatencyFit latencyFit_;
     std::future<LatencyFit> latencyTask_;
     uint64_t sessionRevision_ = 0, latencyRevision_ = 0;
-    int latencyMode_ = 2;
     int selectedLatencyMatch_ = -1;
     bool focusLatencyMatch_ = false;
 

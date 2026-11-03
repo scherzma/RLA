@@ -9,6 +9,7 @@
 #include <format>
 #include <numeric>
 #include <set>
+#include <tuple>
 #pragma comment(lib, "bcrypt.lib")
 
 namespace RLA {
@@ -41,6 +42,21 @@ double Median(std::vector<double> values) {
     auto middle = values.begin() + values.size()/2;
     std::nth_element(values.begin(), middle, values.end());
     return values.size()%2 ? *middle : (*middle + *std::max_element(values.begin(), middle)) * 0.5;
+}
+std::vector<const SavedComparison*> SelectedRuns(const std::vector<SavedComparison>& comparisons, int method) {
+    std::vector<const SavedComparison*> runs;
+    if (method>=0) {
+        for (const auto& run:comparisons) if (run.enabled && run.method==method) runs.push_back(&run);
+        return runs;
+    }
+    std::map<std::tuple<std::string,std::string,std::string>,const SavedComparison*> byRecording;
+    for (const auto& run:comparisons) {
+        if (!run.enabled) continue;
+        auto& selected=byRecording[std::make_tuple(run.recordingKey,run.setupA,run.setupB)];
+        if (!selected || run.method>selected->method) selected=&run;
+    }
+    for (const auto& [key,run]:byRecording) runs.push_back(run);
+    return runs;
 }
 }
 
@@ -149,7 +165,7 @@ bool MouseLibrary::AddComparison(const RecordingSession& session, const LatencyF
     if (session.captureTestMode) return false;
     const auto* a=FindSetup(session.mouseA.setupId); const auto* b=FindSetup(session.mouseB.setupId);
     if (!fit.valid || fit.matchedCycles < 3 || !std::isfinite(fit.differenceMs) || !std::isfinite(fit.spreadMs) ||
-        !std::isfinite(fit.binMs) || fit.spreadMs < 0 || fit.binMs <= 0 || method < 0 || method > 2 ||
+        !std::isfinite(fit.binMs) || fit.spreadMs < 0 || fit.binMs <= 0 || method < 0 || method > 4 ||
         !a || !b || a->pollingHz==0 || b->pollingHz==0 || session.mouseA.setupId == session.mouseB.setupId || session.eventsA.empty() || session.eventsB.empty() ||
         a->connection!=session.mouseA.connection || b->connection!=session.mouseB.connection ||
         a->pollingHz!=session.mouseA.pollingHz || b->pollingHz!=session.mouseB.pollingHz) return false;
@@ -225,8 +241,8 @@ DirectRunSummary MouseLibrary::DirectRuns(const std::string& setup, const std::s
     DirectRunSummary result;
     std::string latestTime;
     if (setup==reference) return result;
-    for (const auto& run : comparisons_) {
-        if (!run.enabled || run.method!=method) continue;
+    for (const auto* selected : SelectedRuns(comparisons_,method)) {
+        const auto& run=*selected;
         double delta;
         if (run.setupA==reference && run.setupB==setup) delta=run.differenceMs;
         else if (run.setupB==reference && run.setupA==setup) delta=-run.differenceMs;
@@ -249,7 +265,8 @@ std::vector<MouseRank> MouseLibrary::Ranking(int method) const {
     std::vector<MouseRank> rows;
     for (const auto& setup : setups_) { indices[setup.id] = rows.size(); rows.push_back({setup.id}); }
     std::map<Pair, std::vector<double>> differences;
-    for (const auto& c : comparisons_) if (c.enabled && c.method == method) {
+    for (const auto* selected : SelectedRuns(comparisons_,method)) {
+        const auto& c=*selected;
         const auto ai = indices.find(c.setupA), bi = indices.find(c.setupB);
         if (ai == indices.end() || bi == indices.end() || ai->second == bi->second) continue;
         const auto a = ai->second, b = bi->second;
@@ -354,7 +371,7 @@ bool MouseLibrary::Load(const std::filesystem::path& path, std::string& error) {
         loaded.bindings_=j.at("bindings").get<std::map<std::string,std::string>>();
         for (const auto& [pathKey,setup] : loaded.bindings_) if (pathKey.empty() || !loaded.FindSetup(setup)) throw std::runtime_error("Invalid device binding.");
         for (const auto& c : j.at("comparisons")) {
-            if (!c.at("method").is_number_integer() || c.at("method").get<int64_t>()<0 || c.at("method").get<uint64_t>()>2 ||
+            if (!c.at("method").is_number_integer() || c.at("method").get<int64_t>()<0 || c.at("method").get<uint64_t>()>4 ||
                 !c.at("cycles").is_number_integer() || c.at("cycles").get<int64_t>()<3)
                 throw std::runtime_error("Invalid comparison method or cycle count.");
             SavedComparison result{c.at("recordingKey"),c.at("setupA"),c.at("setupB"),c.at("savedAt"),c.at("method"),

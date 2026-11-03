@@ -11,7 +11,7 @@ struct MouseSetup {
 };
 struct SavedComparison {
     std::string recordingKey, setupA, setupB, savedAt;
-    int method = 2;
+    int method = 4;
     double differenceMs = 0, spreadMs = 0, binMs = 0;
     size_t cycles = 0;
     bool enabled = true;

@@ -12,7 +12,7 @@ RLA records movement from two mice through Windows Raw Input. Use the plots to c
 
 Select **Event timing / Hz** in **Plot Mode** to inspect intervals and event rates.
 
-In **Movement magnitude**, select **Analyze latency** after recording. Under **Method**, choose **Minima**, **Half-height**, or **Both**. Half-height compares the 50% points between each trough and its neighboring peak, on both the rising and falling slopes. A minimum uses a fit across the bottom of the curve, rather than one noisy sample. Slopes can still be used when the bottom does not support a precise minimum fit.
+In **Movement magnitude**, select **Analyze latency** after recording. Analysis uses minima, maxima, and the 50% points between each trough and its neighboring peak, on both slopes. Minima and maxima use fits around the bottom and top of the curve. Slopes can still be used when an extremum does not support a precise fit. Saved results from earlier methods remain in the library. If one recording has results from several methods, the All result has priority and the recording counts once in rankings.
 
 The estimate uses common time bins and checks local shape, direction, gaps, and agreement between matched features. It requires at least three shared cycles, and searches for differences within +/-10 ms. Independent movement, pauses, weak features, and conflicting estimates are rejected. Each accepted cycle has one vote in the median result. **B-A** is positive when B is slower than A. **Spread (MAD)** is the median absolute deviation of the accepted point differences; it describes variation, not measurement accuracy. The analysis uses its own bin width. Different DPI and event rates do not require manual amplitude scaling for this fit.
 

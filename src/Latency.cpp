@@ -111,6 +111,32 @@ double MatchQuality(const Curve& a, const Minimum& ma, const Curve& b, const Min
     return (ab-sa*sb/n)/std::sqrt((aa-sa*sa/n)*(bb-sb*sb/n));
 }
 struct Crossing { bool valid=false; double time=0, slope=0; };
+Crossing PeakBetween(const Curve& c, size_t minimum, double step) {
+    if (minimum+1>=c.minima.size()) return {};
+    const size_t first=c.minima[minimum].index, last=c.minima[minimum+1].index;
+    if ((last-first)*step>300 || !c.Covers(first,last)) return {};
+    const size_t peak=std::max_element(c.smooth.begin()+first,c.smooth.begin()+last+1)-c.smooth.begin();
+    const int radius=static_cast<int>(std::ceil(10.0/step));
+    if (peak<first+radius || peak+radius>last) return {};
+    const double base=(std::max)(c.smooth[first],c.smooth[last]);
+    const double amplitude=c.smooth[peak]-base;
+    if (amplitude<3) return {};
+    // Fit a quadratic around the broad top. The largest sample alone is
+    // sensitive to count quantization and report arrival jitter.
+    double x2=0, x4=0, y=0, xy=0, x2y=0, yy=0;
+    const int n=2*radius+1;
+    for (int j=-radius;j<=radius;++j) {
+        const double x=double(j)/radius, v=(c.smooth[peak+j]-base)/amplitude;
+        x2+=x*x; x4+=x*x*x*x; y+=v; xy+=x*v; x2y+=x*x*v; yy+=v*v;
+    }
+    const double a=(x2y-x2*y/n)/(x4-x2*x2/n), b=xy/x2;
+    if (a>=0) return {};
+    const double constant=(y-a*x2)/n, offset=-b/(2*a);
+    const double error=(std::max)(0.0,yy-a*x2y-b*xy-constant*y);
+    const double variance=yy-y*y/n;
+    if (std::abs(offset)>0.5 || variance<=0 || 1-error/variance<0.75 || std::sqrt(error/n)>0.04) return {};
+    return {true,(peak+0.5+offset*radius)*step,0};
+}
 Crossing HalfHeight(const Curve& c, size_t minimum, bool rising, double step) {
     if ((!rising && minimum==0) || (rising && minimum+1==c.minima.size())) return {};
     const size_t center=c.minima[minimum].index;
@@ -175,8 +201,15 @@ LatencyFit Analyzer::FitLatency(const RecordingSession& session, int featureMode
             if (std::abs(tb-ta)>10) return;
             fit.matches.push_back({ta,tb,tb-ta,quality,feature}); cycles.push_back(i);
         };
-        if (featureMode!=1 && ma.quality>0 && mb.quality>0) add(ma.time,mb.time,LatencyFeature::Minimum);
-        if (featureMode!=0) for (bool rising:{false,true}) {
+        if ((featureMode==0 || featureMode==2 || featureMode==4) && ma.quality>0 && mb.quality>0)
+            add(ma.time,mb.time,LatencyFeature::Minimum);
+        if (featureMode==3 || featureMode==4) {
+            const auto pa=PeakBetween(a,i,fit.binMs), pb=PeakBetween(b,j,fit.binMs);
+            if (pa.valid && pb.valid && MatchQuality(a,{static_cast<size_t>(pa.time/fit.binMs),pa.time,0},
+                    b,{static_cast<size_t>(pb.time/fit.binMs),pb.time,0},fit.binMs)>=0.85)
+                add(pa.time,pb.time,LatencyFeature::Maximum);
+        }
+        if (featureMode==1 || featureMode==2 || featureMode==4) for (bool rising:{false,true}) {
             const auto ca=HalfHeight(a,i,rising,fit.binMs), cb=HalfHeight(b,j,rising,fit.binMs);
             if (ca.valid && cb.valid && ca.slope/cb.slope>0.67 && ca.slope/cb.slope<1.5 &&
                 MatchQuality(a, {static_cast<size_t>(ca.time/fit.binMs),ca.time,0},

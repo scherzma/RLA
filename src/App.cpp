@@ -498,10 +498,10 @@ void App::StartLatencyAnalysis() {
     latencyFit_ = {};
     selectedLatencyMatch_ = -1;
     latencyRevision_ = sessionRevision_;
-    resultMethod_=latencyMode_;
+    resultMethod_=4;
     try {
-        latencyTask_ = std::async(std::launch::async, [session = currentSession_, mode = latencyMode_] {
-            return Analyzer::FitLatency(session, mode);
+        latencyTask_ = std::async(std::launch::async, [session = currentSession_] {
+            return Analyzer::FitLatency(session);
         });
     } catch (const std::exception& error) { latencyFit_.message = std::string("Analysis failed: ") + error.what(); }
 }
@@ -533,16 +533,6 @@ void App::RenderLatencyControls() {
     if (latencyTask_.valid()) ImGui::TextUnformatted("Analyzing...");
     else if (currentSession_.eventsA.empty() || currentSession_.eventsB.empty()) ImGui::TextDisabled("Record both mice to compare latency.");
     else ImGui::TextDisabled("Compare matching movement; align curve heights automatically.");
-    ImGui::SameLine();
-    if (ImGui::Button("Method...")) ImGui::OpenPopup("Latency method");
-    if (ImGui::BeginPopup("Latency method")) {
-        ImGui::BeginDisabled(state_ == AppState::Recording || latencyTask_.valid());
-        ImGui::SetNextItemWidth(200);
-        if (ImGui::Combo("Features", &latencyMode_, "Minima\0Half-height\0Both (recommended)\0")) ResetLatencyAnalysis();
-        ImGui::EndDisabled();
-        ImGui::TextWrapped("Uses matching minima and/or half-height crossings. Needs at least three shared cycles. Positive B-A means B is slower than A. Display smoothing does not change the result.");
-        ImGui::EndPopup();
-    }
     if (!latencyFit_.message.empty() && !latencyFit_.valid) ImGui::TextWrapped("%s", latencyFit_.message.c_str());
     if (!latencyFit_.valid) return;
     if (!comparisonMessage_.empty()) ImGui::TextWrapped("%s",comparisonMessage_.c_str());
@@ -578,7 +568,9 @@ void App::RenderLatencyControls() {
             while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
                 const auto& match = latencyFit_.matches[i];
                 ImGui::PushID(i); ImGui::TableNextRow(); ImGui::TableNextColumn();
-                const char* name = match.feature == LatencyFeature::Minimum ? "Minimum" : match.feature == LatencyFeature::Rising ? "Rising 50%" : "Falling 50%";
+                const char* name = match.feature == LatencyFeature::Minimum ? "Minimum" :
+                    match.feature == LatencyFeature::Maximum ? "Maximum" :
+                    match.feature == LatencyFeature::Rising ? "Rising 50%" : "Falling 50%";
                 if (ImGui::Selectable(name, selectedLatencyMatch_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
                     selectedLatencyMatch_ = i; focusLatencyMatch_ = true;
                 }
