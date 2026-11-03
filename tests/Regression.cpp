@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <imgui.h>
 #include <implot.h>
@@ -550,7 +551,7 @@ struct AppRegressionAccess {
         unsigned char* pixels; int width, height; io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
         Check(app.selectedLatencyMatch_>=0,"Analysis must select a match for inspection");
         app.selectedLatencyMatch_ = 0; app.focusLatencyMatch_ = true; app.highlightLatencyMatch_=true;
-        const auto match = app.latencyFit_.matches.front();
+        const auto match = app.MatchFit().matches.front();
         for (int frame=0; frame<2; ++frame) {
             ImGui::NewFrame(); ImGui::SetNextWindowSize(ImVec2(1280, 1000)); ImGui::Begin("Latency UI");
             app.RenderPlotPanel(); ImGui::End(); ImGui::Render();
@@ -1253,31 +1254,38 @@ static void RunMouseLibraryChecks() {
         Check(pipelineAfter.recordings==pipelineBefore.recordings && pipelineAfter.latestMs==pipelineBefore.latestMs &&
               pipelineAfter.fastestMs==pipelineBefore.fastestMs && pipelineRow!=pipelineRanks.end() && pipelineRow->recordings==5,
               "Pipeline rankings must ignore data age results");
-        const auto ageRanks=library.Ranking(LatencyMethod::DataAge);
-        double ageA=0,ageB=0; size_t ageRecordings=0;
-        for (const auto& value : ageRanks) {
-            if (value.setupId==sa) { ageA=value.relativeMs; ageRecordings=value.recordings; }
-            if (value.setupId==sb) ageB=value.relativeMs;
+        // Data age rows: measured where saved, otherwise pipeline + (T_B - T_A) / 2.
+        const auto key=MouseLibrary::RecordingKey(session);
+        const auto rows=library.ResultRows(true);
+        std::set<std::string> rowKeys;
+        size_t measured=0, calculated=0, measuredIndex=0;
+        for (const auto& row : rows) {
+            Check(rowKeys.insert(row.run.recordingKey+row.run.setupA+row.run.setupB).second,"Each recording must have one data age row");
+            Check(row.run.method==LatencyMethod::DataAge,"Data age rows must carry the data age id");
+            if (!row.calculated) {
+                ++measured; measuredIndex=row.index;
+                Check(row.run.recordingKey==key && row.run.differenceMs==-4,"A measured data age must be used as saved");
+                continue;
+            }
+            ++calculated;
+            const auto& source=library.Comparisons()[row.index];
+            for (const auto& other : library.Comparisons())
+                Check(other.recordingKey!=source.recordingKey || other.setupA!=source.setupA || other.setupB!=source.setupB ||
+                      LatencyMethod::IsDataAge(other.method) || other.method<=source.method,"A calculated data age must use the newest pipeline result");
+            const double expected=source.differenceMs+(library.ReportIntervalMs(source.setupB)-library.ReportIntervalMs(source.setupA))/2;
+            Check(row.run.recordingKey!=key && std::abs(row.run.differenceMs-expected)<1e-12 && row.run.spreadMs==source.spreadMs,
+                  "A missing data age must be calculated as pipeline + (T_B - T_A) / 2");
         }
-        const auto ageDirect=library.DirectRuns(sb,sa,LatencyMethod::DataAge);
-        Check(ageRecordings==1 && std::abs(ageB-ageA+4)<1e-8 && ageDirect.recordings==1 && std::abs(ageDirect.latestMs+4)<1e-9,
-              "Data age rankings must use only data age results");
-        // Modelled slider view: P + f x T with T from each setup's Hz.
-        auto relative=[](const std::vector<MouseRank>& rows,const std::string& id) {
-            for (const auto& value : rows) if (value.setupId==id) return value.relativeMs;
-            return std::nan("");
-        };
-        const auto modelled=library.WithSamplingAge(pipelineRanks,0.5);
-        Check(std::abs(relative(modelled,sb)-relative(modelled,sa)-(relative(pipelineRanks,sb)-relative(pipelineRanks,sa))-0.5*(0.25-0.125))<1e-9 &&
-              std::abs(relative(modelled,sc)-relative(modelled,sa)-(relative(pipelineRanks,sc)-relative(pipelineRanks,sa))-0.5*(1.0-0.125))<1e-9,
-              "The sampling age slider must add f x T to each setup");
-        for (size_t i=1;i<modelled.size();++i) if (modelled[i].group && modelled[i].group==modelled[i-1].group)
-            Check(modelled[i].place==modelled[i-1].place+1 && modelled[i].relativeMs>=modelled[i-1].relativeMs,
-                  "The sampling age slider must re-sort places within each group");
-        const auto unchanged=library.WithSamplingAge(pipelineRanks,0);
-        Check(unchanged.size()==pipelineRanks.size() && std::equal(unchanged.begin(),unchanged.end(),pipelineRanks.begin(),
-              [](const auto& x,const auto& y){return x.setupId==y.setupId && x.relativeMs==y.relativeMs && x.place==y.place;}),
-              "A zero sampling age must leave the pipeline ranking unchanged");
+        Check(measured==1 && calculated>0,"Data age must combine measured and calculated results");
+        const auto ageRanks=library.Ranking(LatencyMethod::DataAge);
+        const auto ageRow=std::find_if(ageRanks.begin(),ageRanks.end(),[&](const auto& value){return value.setupId==sa;});
+        Check(ageRow!=ageRanks.end() && ageRow->recordings==pipelineRow->recordings &&
+              library.DirectRuns(sb,sa,LatencyMethod::DataAge).recordings==pipelineAfter.recordings,
+              "The data age ranking must cover the same recordings as the pipeline ranking");
+        library.SetEnabled(measuredIndex,false);
+        Check(library.DirectRuns(sb,sa,LatencyMethod::DataAge).recordings+1==pipelineAfter.recordings,
+              "An excluded measured data age must not be replaced by a calculated one");
+        library.SetEnabled(measuredIndex,true);
     }
     for (int rate : {125,250,500,1000,2000,4000,8000}) {
         const auto recording=LatencySession(0,rate,rate);
