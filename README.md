@@ -6,9 +6,7 @@ Move both mice together. RLA records every report from each mouse with a high-re
 
 **[Download for Windows x64](https://github.com/scherzma/RLA/releases/latest)** · [Installation guide](docs/INSTALL.md) · [Build from source](docs/BUILD.md) · [Technical details](docs/TECHNICAL.md)
 
-![Movement curves and a named latency result](docs/images/movement.png)
-
-*A real saved recording. A result applies to that run and those mouse setups.*
+![Hold both mice in one hand, press them together, and move them back and forth. RLA records the movement speed of each mouse on one clock; B arrives later than A.](docs/images/move-both-mice.gif)
 
 ## Highlights
 
@@ -22,16 +20,31 @@ Move both mice together. RLA records every report from each mouse with a high-re
 
 1. Download **RLA-*version*-windows-x64.zip** from [Releases](https://github.com/scherzma/RLA/releases/latest), extract it, and open **RLA.exe**. Windows 10 or 11, x64, DirectX 11.
 2. **Assign A and B.** Click **Assign**, then move only that mouse. Use **Mouse settings** to name it and select wired or wireless.
-3. **Start Recording.** Move both mice together through several smooth back-and-forth cycles.
+3. **Start Recording.** Hold both mice in one hand, press them together, and move them back and forth through several smooth cycles.
 4. **Stop** with a click or Esc. The recording is saved automatically.
 5. **Analyze latency.** RLA shows both results, names the faster mouse, and gives the spread and the number of matched cycles. Linked mice are analyzed and ranked automatically.
 6. **Inspect.** **Previous**, **Next**, and **Zoom to match** step through the matched points on the graph.
 
 The [installation guide](docs/INSTALL.md) covers updates, saved files, and troubleshooting.
 
+## How it works
+
+![Both curves are drawn, then matching minima, maxima, and 50 % slope points are marked, and B−A is the median offset over the matched cycles.](docs/images/how-it-works.svg)
+
+1. Both mice make the same movement, because they are held and pressed together.
+2. RLA puts the reports of each mouse into common time bins and smooths both curves the same way.
+3. It finds the same features in both curves: minima, maxima, and the 50 % points on each slope. A feature counts only if the shape and direction around it match.
+4. Each matched cycle votes once. **B−A** is the median, and **Spread** is how much the matched points vary.
+
+![RLA after Analyze latency: both curves, the Pipeline and Data age results, and the matched features.](docs/images/movement.png)
+
+*A real recording: OP1 8k v2 (A, wired, 8000 Hz) and WLMouse Miao (B, wireless, 1000 Hz). Pipeline: the Miao is 0.32 ms faster. Data age: the OP1 is 0.14 ms faster, because the Miao's 1 ms report interval adds about (1 − 0.125) / 2 = 0.44 ms of sampling age.*
+
 ## Pipeline and data age
 
 A mouse sends one report per polling interval T. Each report holds the motion of the whole interval before it. On average, that motion is T/2 old when the report is sent.
+
+![A 500 Hz report covers 2 ms of motion and arrives after the pipeline time P. Pipeline spreads its counts over the interval and shifts by P; Data age places them at arrival and shifts by P + T/2.](docs/images/pipeline-vs-data-age.svg)
 
 | Result | What it measures | Use it for |
 | --- | --- | --- |
@@ -48,17 +61,17 @@ Example: A at 8000 Hz, B at 500 Hz. If both have the same pipeline delay, Pipeli
 
 ## Library and rankings
 
-![Mouse library and deletion controls](docs/images/library.png)
+![Mouse library: one name per physical mouse, with its wired and wireless setups and detected polling rates.](docs/images/library.png)
 
 Use one name for each physical mouse and link its wired and wireless connections to it. Each connection and detected polling rate gets its own ranking entry; DPI does not. Add setup notes to compare other settings separately.
 
-![Typical, fastest, and latest results against a named reference](docs/images/rankings.png)
+![Rankings: both results of the latest recording, the Result selector, the Add sampling age slider, and the ranking against a reference.](docs/images/rankings.png)
 
 - **Result:** choose **Pipeline** (default) or **Data age**. They are ranked separately.
-- **Add sampling age:** in the Pipeline view, adds f × T per setup: 0 is Pipeline, 0.5 approximates Data age, 1 is the age of the oldest sample in a report. It is computed from the detected Hz, not measured.
+- **Add sampling age:** in the Pipeline view, adds f × T per setup. It starts at **0.5**, the mean sampling age, so slower polling rates count against a mouse by default. 0 shows the pure pipeline delay, 1 the age of the oldest sample in a report. It is computed from the detected Hz, not measured; **Data age** is the measured counterpart.
 - **Typical** combines all enabled runs and sets the order. **Fastest run** and **Latest run** are single runs against the named reference. Click one to open its recording.
 
-**Negative means faster, positive means slower.** Separate tables appear only when no comparison connects their mice. The screenshots show real results, not a general ranking of these mice.
+**Negative means faster, positive means slower.** Separate tables appear only when no comparison connects their mice. The screenshots show real results from one library, not a general ranking of these mice.
 
 ## Saved files
 
@@ -97,3 +110,5 @@ This builds with CMake, Ninja, and vcpkg, runs the regression checks, and writes
 ## More
 
 [Technical details](docs/TECHNICAL.md) · [Regression checks](tests/README.md) · [Capture diagnostic tools](tools/RawInputProbe/README.md)
+
+Screenshots are rendered from a local library with `RLAScreenshots` (built with `-Test`); the diagrams come from `tools/Screenshots/diagrams.py` and `move_gif.py`.
