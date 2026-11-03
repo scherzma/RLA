@@ -100,12 +100,17 @@ void App::SaveComparison() {
     if (libraryReadOnly_ || libraryPath_.empty()) { comparisonMessage_="Mouse library is unavailable."; return; }
     try {
         DetectSessionRates();
-        if (!mouseLibrary_.AddComparison(currentSession_,latencyFit_,resultMethod_)) {
+        // Each result has its own method id, so re-analysing a saved run fills both.
+        const bool pipeline=latencyFit_.valid && mouseLibrary_.AddComparison(currentSession_,latencyFit_,LatencyMethod::Pipeline);
+        const bool dataAge=dataAgeFit_.valid && mouseLibrary_.AddComparison(currentSession_,dataAgeFit_,LatencyMethod::DataAge);
+        if (!pipeline && !dataAge) {
             comparisonMessage_="Link both mice and record steady movement to detect Hz. A valid latency result is also required."; return;
         }
         runsToKeep_.push_back(currentSession_);
         LibraryChanged();
-        comparisonMessage_="Comparison added. Repeating this analysis updates the same run.";
+        comparisonMessage_=pipeline && dataAge ? "Pipeline and Data age results added. Repeating this analysis updates the same run." :
+            std::string(pipeline ? "Pipeline" : "Data age")+" result added; "+(pipeline ? "Data age" : "Pipeline")+
+            " failed its checks. Repeating this analysis updates the same run.";
     } catch (const std::exception& e) { comparisonMessage_=e.what(); }
 }
 bool App::SetupCombo(const char* label,std::string& selection,bool identityOnly) {
@@ -312,11 +317,15 @@ void App::RenderMouseLibrary() {
     return;
     }
     ImGui::SeparatorText("Latest recording");
-    if (!latencyFit_.valid) {
+    if (!latencyFit_.valid && !dataAgeFit_.valid) {
         ImGui::TextWrapped("Analyze a recording with both mice before adding a result.");
         if (ImGui::Button("Go to analysis")) showLibrary_=false;
     } else {
-        ImGui::TextWrapped("%s",GetLatencySummary().c_str());
+        for (const auto* fit : {&latencyFit_,&dataAgeFit_}) {
+            const char* label=fit==&latencyFit_ ? "Pipeline (time-weighted)" : "Data age (arrival time)";
+            if (fit->valid) ImGui::TextWrapped("%s: %s",label,GetLatencySummary(*fit).c_str());
+            else ImGui::TextDisabled("%s: failed its checks.",label);
+        }
     }
     if ((!currentSession_.eventsA.empty() || !currentSession_.eventsB.empty()) && ImGui::CollapsingHeader("Check recording labels and save result",ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::BeginDisabled(state_==AppState::Recording);
@@ -325,15 +334,31 @@ void App::RenderMouseLibrary() {
         if (SetupCombo("Recorded B",b,true)) { currentSession_.mouseB=mouseLibrary_.Identity(b,currentSession_.mouseB.devicePath); DetectSessionRates(); }
         ImGui::Text("Highest detected Hz: A %s | B %s", currentSession_.mouseA.pollingHz ? std::to_string(currentSession_.mouseA.pollingHz).c_str() : "unknown", currentSession_.mouseB.pollingHz ? std::to_string(currentSession_.mouseB.pollingHz).c_str() : "unknown");
         ImGui::TextDisabled("These labels belong to this recording, not to the currently connected mice.");
-        ImGui::BeginDisabled(!latencyFit_.valid);
+        ImGui::BeginDisabled(!latencyFit_.valid && !dataAgeFit_.valid);
         if (ImGui::Button("Save result to rankings")) SaveComparison();
         ImGui::EndDisabled(); ImGui::EndDisabled();
         ImGui::TextWrapped("%s",comparisonMessage_.c_str());
     }
     ImGui::EndDisabled();
     ImGui::SeparatorText("Relative latency ranking");
+    ImGui::SetNextItemWidth(220);
+    if (ImGui::Combo("Result",&rankingView_,"Pipeline (time-weighted)\0Data age (arrival time)\0")) rankingDirty_=true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pipeline excludes the sampling delay of the report interval.\nData age includes it: about half an interval per mouse, e.g. +1 ms at 500 Hz.");
+    const bool dataAgeView=rankingView_==1;
+    const int rankingMethod=dataAgeView ? LatencyMethod::DataAge : LatencyMethod::PipelineRanking;
+    if (!dataAgeView) {
+        ImGui::SetNextItemWidth(220);
+        if (ImGui::SliderFloat("Add sampling age",&samplingAge_,0.0f,1.0f,"%.2f x T",ImGuiSliderFlags_AlwaysClamp)) rankingDirty_=true;
+        bool hovered=ImGui::IsItemHovered();
+        ImGui::SameLine(); ImGui::TextDisabled("(modelled)");
+        hovered=hovered || ImGui::IsItemHovered();
+        if (hovered)
+            ImGui::SetTooltip("Adds f x T to each setup, T = 1000 / Hz.\n0 = Pipeline, 0.5 = mean data age, 1 = oldest sample in a report.\nComputed from detected Hz, not measured. Use Data age for the measured result.");
+    }
+    const double ageFraction=dataAgeView ? 0.0 : samplingAge_;
     if (rankingDirty_) {
-        try { ranking_=mouseLibrary_.Ranking(-1); } catch (const std::exception& e) { ranking_.clear(); libraryMessage_=e.what(); }
+        try { ranking_=mouseLibrary_.WithSamplingAge(mouseLibrary_.Ranking(rankingMethod),ageFraction); }
+        catch (const std::exception& e) { ranking_.clear(); libraryMessage_=e.what(); }
         rankingDirty_=false;
     }
     ImGui::TextWrapped("Typical combines enabled runs. Fastest and Latest show single runs against the reference. Negative = faster; positive = slower. Order is based on Typical.");
@@ -362,7 +387,10 @@ void App::RenderMouseLibrary() {
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(row.setupId).c_str());
                 ImGui::TableNextColumn(); ImGui::Text("%+.3f",row.relativeMs-reference->relativeMs);
                 const bool isReference=row.setupId==reference->setupId;
-                const auto direct=mouseLibrary_.DirectRuns(row.setupId,reference->setupId,-1);
+                auto direct=mouseLibrary_.DirectRuns(row.setupId,reference->setupId,rankingMethod);
+                // The modelled shift is constant for a pair, so the fastest run stays the same run.
+                const double ageShift=ageFraction*(mouseLibrary_.ReportIntervalMs(row.setupId)-mouseLibrary_.ReportIntervalMs(reference->setupId));
+                direct.fastestMs+=ageShift; direct.latestMs+=ageShift;
                 auto resultCell=[&](const char* id,double value,const std::string& key) {
                     ImGui::TableNextColumn();
                     if (isReference) { ImGui::TextDisabled("Reference"); return; }
@@ -388,16 +416,18 @@ void App::RenderMouseLibrary() {
     }
     if (!openRankingKey.empty()) OpenRankedRun(openRankingKey);
     if (ImGui::TreeNode("How rankings work")) {
-        ImGui::TextWrapped("Typical uses the median for each mouse pair and combines linked comparisons. A single fast run can differ from Typical. Fastest means the lowest measured difference, not the most repeatable result. Separate tables are needed only when no comparison connects their mice.");
+        ImGui::TextWrapped("Typical uses the median for each mouse pair and combines linked comparisons. A single fast run can differ from Typical. Fastest means the lowest measured difference, not the most repeatable result. Separate tables are needed only when no comparison connects their mice. Pipeline and Data age results are ranked separately; select one under Result.");
         ImGui::TreePop();
     }
     if (ImGui::CollapsingHeader("Saved runs",ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextWrapped("All accepted runs are retained. Most stable marks the smallest spread against the same reference; ties favor more cycles. A recording counts once in rankings, with the All result preferred.");
+        ImGui::TextWrapped("%s",dataAgeView ? "All accepted runs are retained. Showing Data age results. Most stable marks the smallest spread against the same reference; ties favor more cycles." :
+            "All accepted runs are retained. Showing Pipeline results. Most stable marks the smallest spread against the same reference; ties favor more cycles. A recording counts once in rankings, with the All result preferred.");
         const auto& runs=mouseLibrary_.Comparisons();
+        auto inView=[&](const SavedComparison& run) { return LatencyMethod::IsDataAge(run.method)==dataAgeView; };
         std::map<std::pair<std::string,std::string>,size_t> bestRuns;
         for (size_t i=0;i<runs.size();++i) {
             const auto& run=runs[i];
-            if (!run.enabled) continue;
+            if (!run.enabled || !inView(run)) continue;
             const auto [entry,inserted]=bestRuns.emplace(std::make_pair(run.setupA,run.setupB),i);
             const auto& previous=runs[entry->second];
             if (!inserted && (run.spreadMs<previous.spreadMs || (run.spreadMs==previous.spreadMs && run.cycles>previous.cycles))) entry->second=i;
@@ -411,6 +441,7 @@ void App::RenderMouseLibrary() {
             ImGui::TableSetupScrollFreeze(0,1); ImGui::TableHeadersRow();
             for (size_t i=0;i<runs.size();++i) {
                 const auto& run=runs[i];
+                if (!inView(run)) continue;
                 const auto bestEntry=bestRuns.find({run.setupA,run.setupB});
                 const bool best=bestEntry!=bestRuns.end() && bestEntry->second==i;
                 ImGui::PushID(static_cast<int>(i)); ImGui::TableNextRow(); ImGui::TableNextColumn();
@@ -419,7 +450,7 @@ void App::RenderMouseLibrary() {
                 ImGui::EndDisabled();
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(run.setupA).c_str());
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(run.setupB).c_str());
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(run.method==4 ? "All" : run.method==2 ? "Min + half" : run.method==1 ? "Half-height" : run.method==0 ? "Minima" : "Maxima");
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(run.method==LatencyMethod::DataAge ? "Data age" : run.method==4 ? "All" : run.method==2 ? "Min + half" : run.method==1 ? "Half-height" : run.method==0 ? "Minima" : "Maxima");
                 ImGui::TableNextColumn(); ImGui::Text("%+.3f",run.differenceMs);
                 ImGui::TableNextColumn(); ImGui::Text("%.3f",run.spreadMs);
                 ImGui::TableNextColumn(); ImGui::Text("%zu",run.cycles);

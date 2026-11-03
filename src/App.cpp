@@ -488,6 +488,7 @@ void App::RenderAutosaveControls() {
 void App::ResetLatencyAnalysis() {
     ++sessionRevision_;
     latencyFit_ = {};
+    dataAgeFit_ = {};
     comparisonMessage_.clear();
     selectedLatencyMatch_ = -1;
     focusLatencyMatch_ = false;
@@ -496,32 +497,47 @@ void App::ResetLatencyAnalysis() {
 void App::StartLatencyAnalysis() {
     if (state_ == AppState::Recording || latencyTask_.valid()) return;
     latencyFit_ = {};
+    dataAgeFit_ = {};
     selectedLatencyMatch_ = -1;
     latencyRevision_ = sessionRevision_;
-    resultMethod_=4;
     try {
         latencyTask_ = std::async(std::launch::async, [session = currentSession_] {
-            return Analyzer::FitLatency(session);
+            return LatencyResults{Analyzer::FitLatency(session, 4, LatencyBinning::TimeWeighted),
+                                  Analyzer::FitLatency(session, 4, LatencyBinning::Arrival)};
         });
-    } catch (const std::exception& error) { latencyFit_.message = std::string("Analysis failed: ") + error.what(); }
+    } catch (const std::exception& error) {
+        latencyFit_.message = dataAgeFit_.message = std::string("Analysis failed: ") + error.what();
+    }
+}
+
+const LatencyFit& App::MatchFit() const {
+    if (latencyFit_.valid && dataAgeFit_.valid) return matchView_ ? dataAgeFit_ : latencyFit_;
+    return dataAgeFit_.valid ? dataAgeFit_ : latencyFit_;
+}
+
+void App::SelectClosestMatch() {
+    const auto& fit=MatchFit();
+    selectedLatencyMatch_=-1;
+    if (!fit.valid || fit.matches.empty()) return;
+    const auto closest=std::min_element(fit.matches.begin(),fit.matches.end(),[&](const auto& a,const auto& b) {
+        return std::abs(a.differenceMs-fit.differenceMs)<std::abs(b.differenceMs-fit.differenceMs);
+    });
+    selectedLatencyMatch_=static_cast<int>(closest-fit.matches.begin());
 }
 
 void App::PollLatencyAnalysis() {
     if (!latencyTask_.valid() || latencyTask_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
     try {
-        auto fit = latencyTask_.get();
+        auto results = latencyTask_.get();
         if (latencyRevision_ == sessionRevision_) {
-            latencyFit_ = std::move(fit);
-            if (latencyFit_.valid && !latencyFit_.matches.empty()) {
-                const auto closest=std::min_element(latencyFit_.matches.begin(),latencyFit_.matches.end(),[&](const auto& a,const auto& b) {
-                    return std::abs(a.differenceMs-latencyFit_.differenceMs)<std::abs(b.differenceMs-latencyFit_.differenceMs);
-                });
-                selectedLatencyMatch_=static_cast<int>(closest-latencyFit_.matches.begin());
-            }
-            if (latencyFit_.valid && mouseLibrary_.autoRank && !currentSession_.mouseA.setupId.empty() && !currentSession_.mouseB.setupId.empty()) SaveComparison();
+            latencyFit_ = std::move(results.pipeline);
+            dataAgeFit_ = std::move(results.dataAge);
+            SelectClosestMatch();
+            if ((latencyFit_.valid || dataAgeFit_.valid) && mouseLibrary_.autoRank &&
+                !currentSession_.mouseA.setupId.empty() && !currentSession_.mouseB.setupId.empty()) SaveComparison();
         }
     } catch (const std::exception& error) {
-        if (latencyRevision_ == sessionRevision_) latencyFit_.message = std::string("Analysis failed: ") + error.what();
+        if (latencyRevision_ == sessionRevision_) latencyFit_.message = dataAgeFit_.message = std::string("Analysis failed: ") + error.what();
     }
 }
 
@@ -533,40 +549,63 @@ void App::RenderLatencyControls() {
     if (latencyTask_.valid()) ImGui::TextUnformatted("Analyzing...");
     else if (currentSession_.eventsA.empty() || currentSession_.eventsB.empty()) ImGui::TextDisabled("Record both mice to compare latency.");
     else ImGui::TextDisabled("Compare matching movement; align curve heights automatically.");
-    if (!latencyFit_.message.empty() && !latencyFit_.valid) ImGui::TextWrapped("%s", latencyFit_.message.c_str());
-    if (!latencyFit_.valid) return;
+    const bool anyValid=latencyFit_.valid || dataAgeFit_.valid;
+    if (!anyValid) {
+        // Before the first analysis both messages are empty.
+        if (latencyFit_.message==dataAgeFit_.message) { if (!latencyFit_.message.empty()) ImGui::TextWrapped("%s", latencyFit_.message.c_str()); }
+        else {
+            if (!latencyFit_.message.empty()) ImGui::TextWrapped("Pipeline (time-weighted): %s", latencyFit_.message.c_str());
+            if (!dataAgeFit_.message.empty()) ImGui::TextWrapped("Data age (arrival time): %s", dataAgeFit_.message.c_str());
+        }
+        return;
+    }
     if (!comparisonMessage_.empty()) ImGui::TextWrapped("%s",comparisonMessage_.c_str());
-    ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.0f,0.85f,0.4f,1));
-    ImGui::TextWrapped("%s",GetLatencySummary().c_str());
-    ImGui::PopStyleColor();
-    ImGui::SameLine();
-    ImGui::Text("| Spread: %.3f ms | %zu matched cycles",latencyFit_.spreadMs,latencyFit_.matchedCycles);
-    ImGui::SameLine();
+    auto resultLine=[&](const char* label,const LatencyFit& fit) {
+        if (!fit.valid) {
+            ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::TextWrapped("%s: failed its checks. %s", label, fit.message.c_str());
+            ImGui::PopStyleColor();
+            return;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.0f,0.85f,0.4f,1));
+        ImGui::TextWrapped("%s: %+.3f ms | Spread: %.3f ms | %zu matched cycles | %s",label,fit.differenceMs,
+            fit.spreadMs,fit.matchedCycles,GetLatencySummary(fit).c_str());
+        ImGui::PopStyleColor();
+    };
+    resultLine("Pipeline (time-weighted)",latencyFit_);
+    resultLine("Data age (arrival time)",dataAgeFit_);
     if (ImGui::Button("Review / save result")) { showLibrary_=true; libraryPage_=1; }
+    if (latencyFit_.valid && dataAgeFit_.valid) {
+        ImGui::SameLine(); ImGui::SetNextItemWidth(160);
+        if (ImGui::Combo("Matches", &matchView_, "Pipeline\0Data age\0")) { SelectClosestMatch(); focusLatencyMatch_=true; }
+    }
+    const auto& shown=MatchFit();
     ImGui::Checkbox("Highlight selected match", &highlightLatencyMatch_);
     ImGui::SameLine();
     ImGui::Checkbox("All matches", &showAllLatencyMarkers_);
-    if (!latencyFit_.matches.empty()) {
+    if (!shown.matches.empty()) {
         ImGui::SameLine();
-        if (ImGui::Button("Previous")) { selectedLatencyMatch_=(selectedLatencyMatch_<=0 ? static_cast<int>(latencyFit_.matches.size()) : selectedLatencyMatch_)-1; focusLatencyMatch_=true; }
+        if (ImGui::Button("Previous")) { selectedLatencyMatch_=(selectedLatencyMatch_<=0 ? static_cast<int>(shown.matches.size()) : selectedLatencyMatch_)-1; focusLatencyMatch_=true; }
         ImGui::SameLine();
-        if (ImGui::Button("Next")) { selectedLatencyMatch_=(selectedLatencyMatch_+1)%static_cast<int>(latencyFit_.matches.size()); focusLatencyMatch_=true; }
+        if (ImGui::Button("Next")) { selectedLatencyMatch_=(selectedLatencyMatch_+1)%static_cast<int>(shown.matches.size()); focusLatencyMatch_=true; }
         ImGui::SameLine();
         if (ImGui::Button("Zoom to match")) { if (selectedLatencyMatch_<0) selectedLatencyMatch_=0; focusLatencyMatch_=true; }
         ImGui::SameLine();
-        ImGui::Text("Match %d / %zu",selectedLatencyMatch_+1,latencyFit_.matches.size());
+        ImGui::Text("Match %d / %zu",selectedLatencyMatch_+1,shown.matches.size());
     }
     if (ImGui::TreeNode("Latency details")) {
-        ImGui::TextWrapped("%s", latencyFit_.message.c_str());
+        ImGui::TextWrapped("%s", shown.message.c_str());
+        ImGui::TextWrapped("Pipeline spreads each report over the time since the previous report, so it excludes the sampling age of the report interval. Data age keeps counts at arrival time and adds about half an interval per mouse. Matches below are from %s.",
+            &shown==&dataAgeFit_ ? "Data age" : "Pipeline");
         ImGui::TextUnformatted("Spread describes variation between points, not measurement accuracy. Select a row to view it.");
         if (ImGui::BeginTable("Matched features", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, 130))) {
             for (const char* label : {"Feature", "A (ms)", "B (ms)", "B-A (ms)", "Shape match"}) ImGui::TableSetupColumn(label);
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
             ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(latencyFit_.matches.size()));
+            clipper.Begin(static_cast<int>(shown.matches.size()));
             while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                const auto& match = latencyFit_.matches[i];
+                const auto& match = shown.matches[i];
                 ImGui::PushID(i); ImGui::TableNextRow(); ImGui::TableNextColumn();
                 const char* name = match.feature == LatencyFeature::Minimum ? "Minimum" :
                     match.feature == LatencyFeature::Maximum ? "Maximum" :
@@ -879,8 +918,9 @@ void App::RenderPlotPanel() {
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImGuiCond_Once);
             }
 
-            if (focusLatencyMatch_ && selectedLatencyMatch_ >= 0 && selectedLatencyMatch_ < static_cast<int>(latencyFit_.matches.size())) {
-                const auto& match = latencyFit_.matches[selectedLatencyMatch_];
+            const auto& shownFit = MatchFit();
+            if (focusLatencyMatch_ && selectedLatencyMatch_ >= 0 && selectedLatencyMatch_ < static_cast<int>(shownFit.matches.size())) {
+                const auto& match = shownFit.matches[selectedLatencyMatch_];
                 ImPlot::SetupAxisLimits(ImAxis_X1, (std::min)(match.timeA, match.timeB) - 15, (std::max)(match.timeA, match.timeB) + 15, ImPlotCond_Always);
                 double peak=0;
                 for (bool mouseB : {false,true}) {
@@ -903,17 +943,17 @@ void App::RenderPlotPanel() {
                 ImPlot::PlotLine((GetRecordingMouseName(mouseB)+(mouseB ? "###movement-B" : "###movement-A")).c_str(),curve.times.data(),curve.values.data(),static_cast<int>(curve.times.size()));
             }
 
-            if ((highlightLatencyMatch_ || showAllLatencyMarkers_) && latencyFit_.valid) {
+            if ((highlightLatencyMatch_ || showAllLatencyMarkers_) && shownFit.valid) {
                 if (showAllLatencyMarkers_) {
                     std::vector<double> marksA,marksB;
-                    for (const auto& match : latencyFit_.matches) { marksA.push_back(match.timeA); marksB.push_back(match.timeB); }
+                    for (const auto& match : shownFit.matches) { marksA.push_back(match.timeA); marksB.push_back(match.timeB); }
                     ImPlot::SetNextLineStyle(ImVec4(0.3f,0.7f,1,0.65f),1.5f);
                     ImPlot::PlotInfLines("A matches",marksA.data(),static_cast<int>(marksA.size()));
                     ImPlot::SetNextLineStyle(ImVec4(1,0.55f,0.25f,0.65f),1.5f);
                     ImPlot::PlotInfLines("B matches",marksB.data(),static_cast<int>(marksB.size()));
                 }
-                if (highlightLatencyMatch_ && selectedLatencyMatch_>=0 && selectedLatencyMatch_<static_cast<int>(latencyFit_.matches.size())) {
-                    const auto& match=latencyFit_.matches[selectedLatencyMatch_];
+                if (highlightLatencyMatch_ && selectedLatencyMatch_>=0 && selectedLatencyMatch_<static_cast<int>(shownFit.matches.size())) {
+                    const auto& match=shownFit.matches[selectedLatencyMatch_];
                     const ImVec4 aColor(0.35f,0.8f,1,1),bColor(1,0.65f,0.25f,1);
                     ImPlot::SetNextLineStyle(aColor,3.0f);
                     ImPlot::PlotInfLines("A selected",&match.timeA,1);
@@ -1305,8 +1345,8 @@ void App::OnResize(int width, int height) {
     }
 }
 
-std::string App::GetLatencySummary() const {
-    const double difference=latencyFit_.differenceMs;
+std::string App::GetLatencySummary(const LatencyFit& fit) const {
+    const double difference=fit.differenceMs;
     if (std::abs(difference)<0.0005)
         return GetRecordingMouseName(false)+" and "+GetRecordingMouseName(true)+": difference rounds to 0.000 ms.";
     const bool bFaster=difference<0;

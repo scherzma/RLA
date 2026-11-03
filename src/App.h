@@ -89,7 +89,7 @@ private:
     // Helper to get device display name
     std::string GetMouseDisplayName(const MouseDevice* device) const;
     std::string GetRecordingMouseName(bool mouseB) const;
-    std::string GetLatencySummary() const;
+    std::string GetLatencySummary(const LatencyFit& fit) const;
 
     // Components
     std::unique_ptr<Renderer> renderer_;
@@ -109,7 +109,8 @@ private:
     std::deque<RecordingSession> runsToKeep_;
     std::string libraryMessage_, comparisonMessage_;
     std::vector<MouseRank> ranking_;
-    int resultMethod_ = 4;
+    int rankingView_ = 0; // 0: pipeline (time-weighted), 1: data age (arrival time)
+    float samplingAge_ = 0; // Pipeline view only: modelled sampling age added, as a fraction of T.
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
     int connectionIndex_ = 1;
@@ -136,8 +137,14 @@ private:
     // Recording data
     RecordingSession currentSession_;
     AnalysisResult analysisResult_;
-    LatencyFit latencyFit_;
-    std::future<LatencyFit> latencyTask_;
+    // Both fits use the same recording. Only the bin rule differs.
+    struct LatencyResults { LatencyFit pipeline, dataAge; };
+    LatencyFit latencyFit_;  // Pipeline: time-weighted bins.
+    LatencyFit dataAgeFit_;  // Data age: arrival-time bins.
+    std::future<LatencyResults> latencyTask_;
+    int matchView_ = 0; // Matches shown when both fits are valid. 0: pipeline, 1: data age.
+    const LatencyFit& MatchFit() const;
+    void SelectClosestMatch();
     uint64_t sessionRevision_ = 0, latencyRevision_ = 0;
     int selectedLatencyMatch_ = -1;
     bool focusLatencyMatch_ = false;
