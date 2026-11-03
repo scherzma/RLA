@@ -65,6 +65,43 @@ std::vector<MovementBin> Analyzer::BinMovement(const std::vector<MouseEvent>& ev
     return bins;
 }
 
+std::vector<MovementBin> Analyzer::BinArrival(const std::vector<MouseEvent>& events,
+    int64_t startTimestamp, double frequency, double binMs) {
+    std::vector<MovementBin> bins;
+    if (events.empty() || startTimestamp < 0 || !std::isfinite(frequency) || frequency <= 0 ||
+        !std::isfinite(binMs) || binMs < 0.01) return bins;
+    int64_t previous = startTimestamp;
+    for (const auto& event : events) {
+        if (event.timestamp < previous) return bins;
+        previous = event.timestamp;
+    }
+    // Lower indices never decrease, so a target is one of the last two bins.
+    auto add = [&](int64_t index, const MouseEvent& event, double fraction) {
+        if (fraction <= 0) return;
+        MovementBin* target = nullptr;
+        for (size_t back = 1; back <= 2 && back <= bins.size(); ++back)
+            if (bins[bins.size() - back].index == index) target = &bins[bins.size() - back];
+        if (!target) {
+            if (!bins.empty() && bins.back().index > index) return;
+            bins.push_back({index}); target = &bins.back();
+        }
+        target->x += event.deltaX * fraction;
+        target->y += event.deltaY * fraction;
+    };
+    for (const auto& event : events) {
+        const double time = (event.timestamp - startTimestamp) * 1000.0 / frequency;
+        if (!std::isfinite(time) || time / binMs >= 4503599627370496.0) return {};
+        // Bin i is centered at (i + 0.5) * binMs. Floor binning alone would move
+        // every report to its bin center, a bias of up to half a bin.
+        const double position = time / binMs - 0.5;
+        const auto lower = static_cast<int64_t>(std::floor(position));
+        const double upper = position - lower;
+        add(lower, event, 1.0 - upper);
+        add(lower + 1, event, upper);
+    }
+    return bins;
+}
+
 ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
     ScaleFit result;
     result.message = "Not enough matching movement. Record both mice moving together for longer.";

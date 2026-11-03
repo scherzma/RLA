@@ -36,8 +36,13 @@ struct LatencyMatch {
     double timeA = 0, timeB = 0, differenceMs = 0, quality = 0;
     LatencyFeature feature = LatencyFeature::Minimum;
 };
+// TimeWeighted spreads each report over the interval since the previous one and
+// measures pipeline delay. Arrival keeps counts at arrival time and also
+// includes the sampling age of the report interval (about half an interval).
+enum class LatencyBinning { TimeWeighted, Arrival };
 struct LatencyFit {
     bool valid = false;
+    LatencyBinning binning = LatencyBinning::TimeWeighted;
     double differenceMs = 0, spreadMs = 0, binMs = 0;
     size_t candidatePairs = 0, matchedCycles = 0;
     std::vector<LatencyMatch> matches;
@@ -58,11 +63,17 @@ public:
     // Fits B to A from shared movement only. Does not change event timestamps.
     static ScaleFit FitScaleB(const RecordingSession& session);
     // Positive B-A means B appears later. Modes: 0 minima, 1 slopes, 2 both (legacy), 3 maxima, 4 all.
-    static LatencyFit FitLatency(const RecordingSession& session, int featureMode = 4);
+    // Binning changes only how report counts enter the time bins.
+    static LatencyFit FitLatency(const RecordingSession& session, int featureMode = 4,
+        LatencyBinning binning = LatencyBinning::TimeWeighted);
     // Sparse bins preserve signed counts. Weighted bins estimate uniform motion
     // between nearby reports; first reports and reports after long gaps stay local.
     static std::vector<MovementBin> BinMovement(const std::vector<MouseEvent>& events,
         int64_t startTimestamp, double frequency, double binMs, bool timeWeighted);
+    // Keeps each report's centroid at its arrival time, independent of the bin
+    // grid, by splitting it linearly between the two nearest bin centers.
+    static std::vector<MovementBin> BinArrival(const std::vector<MouseEvent>& events,
+        int64_t startTimestamp, double frequency, double binMs);
     static EventTiming BuildEventTiming(const std::vector<MouseEvent>& events,
         int64_t startTimestamp, double frequency, double endMs, double windowMs, double longGapMs = 20.0);
     // Events must be sorted by timestamp. Counts movement reports in (beginMs,endMs].

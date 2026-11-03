@@ -32,11 +32,17 @@ struct Curve {
             invalid[last + smoothingRadius + 1] == invalid[first - smoothingRadius];
     }
 };
-Curve MakeCurve(const RecordingSession& session, const std::vector<MouseEvent>& events, size_t size, double step) {
+Curve MakeCurve(const RecordingSession& session, const std::vector<MouseEvent>& events, size_t size, double step,
+    LatencyBinning binning) {
     Curve c;
     c.x.resize(size); c.y.resize(size); c.magnitude.resize(size); c.smooth.resize(size);
     std::vector<bool> covered(size);
-    for (const auto& bin : Analyzer::BinMovement(events, session.startTimestamp, session.qpcFrequency, step, true)) {
+    // The bin rule is the only difference between the two results. Smoothing,
+    // gap handling, features, and acceptance checks below are shared.
+    const auto bins = binning == LatencyBinning::Arrival ?
+        Analyzer::BinArrival(events, session.startTimestamp, session.qpcFrequency, step) :
+        Analyzer::BinMovement(events, session.startTimestamp, session.qpcFrequency, step, true);
+    for (const auto& bin : bins) {
         if (bin.index < 0 || static_cast<size_t>(bin.index) >= size) continue;
         c.x[bin.index] = bin.x; c.y[bin.index] = bin.y;
         c.magnitude[bin.index] = std::hypot(bin.x, bin.y);
@@ -165,8 +171,9 @@ Crossing HalfHeight(const Curve& c, size_t minimum, bool rising, double step) {
 }
 }
 
-LatencyFit Analyzer::FitLatency(const RecordingSession& session, int featureMode) {
+LatencyFit Analyzer::FitLatency(const RecordingSession& session, int featureMode, LatencyBinning binning) {
     LatencyFit fit;
+    fit.binning=binning;
     fit.message="No reliable estimate. Record at least three clean, shared movement cycles.";
     if (!std::isfinite(session.qpcFrequency) || session.qpcFrequency<=0 || session.startTimestamp<0 ||
         session.endTimestamp<=session.startTimestamp || session.eventsA.size()<30 || session.eventsB.size()<30) return fit;
@@ -182,8 +189,8 @@ LatencyFit Analyzer::FitLatency(const RecordingSession& session, int featureMode
     fit.binMs=(std::max)(0.25,std::round(interval/0.125)*0.125);
     const double count=std::ceil((session.endTimestamp-session.startTimestamp)*1000.0/session.qpcFrequency/fit.binMs)+1;
     if (!std::isfinite(count) || count>2000000) { fit.message="Recording is too long for latency fitting. Use a shorter recording."; return fit; }
-    const auto a=MakeCurve(session,session.eventsA,static_cast<size_t>(count),fit.binMs);
-    const auto b=MakeCurve(session,session.eventsB,static_cast<size_t>(count),fit.binMs);
+    const auto a=MakeCurve(session,session.eventsA,static_cast<size_t>(count),fit.binMs,binning);
+    const auto b=MakeCurve(session,session.eventsB,static_cast<size_t>(count),fit.binMs,binning);
     std::vector<size_t> cycles;
     for (size_t i=0;i<a.minima.size();++i) {
         const auto& ma=a.minima[i];
