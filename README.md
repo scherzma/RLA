@@ -20,7 +20,7 @@ No Visual Studio or separate C++ runtime installation is needed for the portable
 1. **Assign A and B.** Move only the mouse you are assigning. Use **Mouse settings** to name each device and select wired or wireless.
 2. **Start Recording.** The graph opens automatically. Move both mice together through several smooth cycles.
 3. **Stop with a click or Esc.** The completed recording is saved automatically.
-4. **Analyze latency.** RLA names the faster mouse and shows the difference in milliseconds. Linked mice can be analyzed and ranked automatically.
+4. **Analyze latency.** RLA shows two results, **Pipeline** and **Data age** (see [Measurement limits](#measurement-limits)). For each, it names the faster mouse and shows the difference in milliseconds. Linked mice can be analyzed and ranked automatically.
 5. **Inspect the result.** Use **Previous**, **Next**, and **Zoom to match**. Turn match highlights on only when you need them.
 
 Hz is detected automatically for each recording. RLA keeps the highest detected standard rate from **125, 250, 500, 1000, 2000, 4000, or 8000 Hz**. **Recorded rate** shows what was stored. Sparse or unsuitable movement can leave the rate unknown.
@@ -74,7 +74,14 @@ This uses CMake, Ninja, and vcpkg. The executable is `out/cmake-release/RLA.exe`
 
 ## Measurement limits
 
-Results compare mouse movement with application arrival timestamps. They are not isolated USB or sensor latency measurements. Motion differences, event batching, and other input software can affect a result. Use repeated runs and inspect the curves. **Spread** describes variation, not accuracy.
+Results compare mouse movement with application arrival timestamps. They are not isolated USB or sensor latency measurements.
+
+Each analysis gives two results from the same recording:
+
+- **Pipeline (time-weighted)** spreads each report's counts over the interval since the previous report. It measures the delay after the mouse samples its motion, and removes the sampling delay of the polling interval.
+- **Data age (arrival time)** keeps the counts at the time they arrive. A report describes motion from the whole interval before it, so its data is on average about half an interval old (T/2, T = report interval) when it is sent. This result is closer to what the cursor shows.
+
+For B-A, Data age = Pipeline + (T_B - T_A)/2. Example: A at 8000 Hz (T = 0.125 ms), B at 500 Hz (T = 2 ms). Data age is (2 - 0.125)/2 = about 0.94 ms higher than Pipeline. Two mice with equal Pipeline results therefore differ by about 0.94 ms in Data age. The library ranks the two results separately; **Pipeline** is the default. In the Pipeline view, the **Add sampling age** slider adds f x T per setup (0 = Pipeline, 0.5 = modelled data age, 1 = oldest sample). It is computed from the detected Hz, not measured. Motion differences, event batching, and other input software can affect a result. Use repeated runs and inspect the curves. **Spread** describes variation, not accuracy.
 
 Close input-sharing software when testing. In local tests, active Synergy reduced the combined observed event rate; closing it restored the rate. This is a local observation, not a claim about every system.
 
