@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -442,7 +443,17 @@ struct AppRegressionAccess {
         app.StartLatencyAnalysis();
         Check(app.latencyTask_.wait_for(std::chrono::seconds(5))==std::future_status::ready,"Library analysis must finish");
         app.PollLatencyAnalysis();
-        Check(app.mouseLibrary_.Comparisons().size()==1 && app.runsToKeep_.size()==1,"Valid named analysis must queue one comparison and recording");
+        Check(app.latencyFit_.valid && app.dataAgeFit_.valid,"Library analysis must produce both latency results");
+        Check(app.mouseLibrary_.Comparisons().size()==2 && app.runsToKeep_.size()==1 &&
+              app.mouseLibrary_.Comparisons()[0].method==LatencyMethod::Pipeline && app.mouseLibrary_.Comparisons()[1].method==LatencyMethod::DataAge,
+              "Valid named analysis must queue the pipeline and data age results with one recording");
+        app.StartLatencyAnalysis();
+        Check(app.latencyTask_.wait_for(std::chrono::seconds(5))==std::future_status::ready,"Repeated library analysis must finish");
+        app.PollLatencyAnalysis();
+        Check(app.mouseLibrary_.Comparisons().size()==2 && app.runsToKeep_.size()==2 &&
+              MouseLibrary::RecordingKey(app.runsToKeep_.back())==MouseLibrary::RecordingKey(app.runsToKeep_.front()),
+              "Re-analysing a saved run must update both results without adding weight");
+        app.runsToKeep_.pop_back(); // Same recording queued twice; keep the counts below unchanged.
         const auto key=MouseLibrary::RecordingKey(app.currentSession_);
         // A second accepted run can arrive before the first save finishes.
         ++app.currentSession_.endTimestamp;
@@ -530,7 +541,9 @@ struct AppRegressionAccess {
         Check(app.latencyTask_.valid(), "Latency analysis must start in the background");
         Check(app.latencyTask_.wait_for(std::chrono::seconds(5)) == std::future_status::ready, "Latency worker must finish");
         app.PollLatencyAnalysis();
-        Check(app.latencyFit_.valid, "Completed latency analysis must reach the UI");
+        Check(app.latencyFit_.valid && app.dataAgeFit_.valid, "Completed latency analysis must reach the UI with both results");
+        Check(app.latencyFit_.binning==LatencyBinning::TimeWeighted && app.dataAgeFit_.binning==LatencyBinning::Arrival,
+              "Pipeline and data age must use their own bin rules");
         ImGui::CreateContext(); ImPlot::CreateContext();
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
         io.DisplaySize = ImVec2(1280, 1000); io.DeltaTime = 1.0f / 60.0f;
@@ -553,7 +566,8 @@ struct AppRegressionAccess {
         app.RebuildPlotData(); // Simulate loading a new recording while the worker runs.
         Check(app.latencyTask_.wait_for(std::chrono::seconds(5)) == std::future_status::ready, "Second latency worker must finish");
         app.PollLatencyAnalysis();
-        Check(!app.latencyFit_.valid && app.latencyFit_.matches.empty(), "Stale results must not reach a different recording");
+        Check(!app.latencyFit_.valid && app.latencyFit_.matches.empty() && !app.dataAgeFit_.valid && app.dataAgeFit_.matches.empty(),
+              "Stale results must not reach a different recording");
         app.state_ = AppState::Recording;
         app.StartLatencyAnalysis();
         Check(!app.latencyTask_.valid(), "Analysis must not read a live recording");
@@ -1062,6 +1076,76 @@ static void RunLatencyChecks() {
     }
 }
 
+// Each mouse samples a smooth motion every T ms and sends the movement since its
+// previous sample. The report arrives after a fixed pipeline delay.
+static RLA::RecordingSession SampledSession(int rateA, double pipelineA, int rateB, double pipelineB, double phaseB) {
+    RLA::RecordingSession session;
+    session.startTimestamp = 3000000;
+    session.qpcFrequency = 1000000;
+    session.endTimestamp = session.startTimestamp + 1300000;
+    auto make = [&](std::vector<RLA::MouseEvent>& events, int rate, double scale, double pipeline, double phase) {
+        const double period = 1000.0 / rate;
+        auto position = [&](double t) { return std::llround(scale * 20000 * std::sin(t * 6.283185307179586 / 120)); };
+        for (int k = 1; k * period + phase <= 1200; ++k) {
+            const double sample = k * period + phase;
+            const int dx = static_cast<int>(position(sample) - position(sample - period));
+            if (dx) events.push_back({nullptr, session.startTimestamp + std::llround((50 + sample + pipeline) * 1000), dx, 0});
+        }
+    };
+    make(session.eventsA, rateA, 1, pipelineA, 0);
+    make(session.eventsB, rateB, 0.45, pipelineB, phaseB);
+    return session;
+}
+
+static void RunDataAgeChecks() {
+    using namespace RLA;
+    // A: 8 kHz, 0.5 ms pipeline. B: 1.0 ms pipeline. Pipeline B-A stays +0.5 ms.
+    // Data age adds half of each report interval: +0.5 + (T_B - T_A) / 2.
+    for (double phase : {0.0, 0.37, 1.13}) for (int rate : {500, 1000, 2000, 4000, 8000}) {
+        const double periodB = 1000.0 / rate, periodA = 1000.0 / 8000;
+        const auto session = SampledSession(8000, 0.5, rate, 1.0, std::fmod(phase, periodB));
+        const auto pipeline = Analyzer::FitLatency(session, 4, LatencyBinning::TimeWeighted);
+        const auto dataAge = Analyzer::FitLatency(session, 4, LatencyBinning::Arrival);
+        const double expectedAge = 0.5 + (periodB - periodA) / 2;
+        std::cout << "Data age B=" << rate << " Hz phase=" << std::fmod(phase, periodB) << " pipeline=" << pipeline.differenceMs
+                  << " (expected 0.5) data age=" << dataAge.differenceMs << " (expected " << expectedAge << ") cycles="
+                  << pipeline.matchedCycles << "/" << dataAge.matchedCycles << '\n';
+        Check(pipeline.valid && pipeline.matchedCycles >= 10 && std::abs(pipeline.differenceMs - 0.5) < 0.05,
+              "Time-weighted fit must measure the pipeline difference at every report rate");
+        Check(dataAge.valid && dataAge.matchedCycles >= 10 && std::abs(dataAge.differenceMs - expectedAge) < 0.05,
+              "Arrival-time fit must add half of each report interval to the pipeline difference");
+    }
+    // Binning at arrival must not depend on where reports fall in the bin grid.
+    std::vector<MouseEvent> events{{nullptr, 1000 + 1600, 10, -4}, {nullptr, 1000 + 1700, 10, 0}, {nullptr, 1000 + 4000, 5, 0}};
+    const auto bins = Analyzer::BinArrival(events, 1000, 1000000, 1.0);
+    double total = 0, moment = 0, y = 0;
+    for (const auto& bin : bins) { total += bin.x; moment += bin.x * (bin.index + 0.5); y += bin.y; }
+    Check(bins.size() == 4 && std::abs(total - 25) < 1e-12 && std::abs(y + 4) < 1e-12 &&
+          std::abs(moment - (10 * 1.6 + 10 * 1.7 + 5 * 4.0)) < 1e-12,
+          "Arrival bins must keep total counts and each report's arrival time");
+    for (size_t i = 1; i < bins.size(); ++i) Check(bins[i].index > bins[i - 1].index, "Arrival bins must be unique and ordered");
+    Check(Analyzer::BinArrival(events, 1000, 0, 1).empty() && Analyzer::BinArrival(events, 1000, 1000000, 0).empty(),
+          "Arrival binning must reject invalid clocks and widths");
+
+    // Saved hardware recording: 500 Hz A, 8 kHz B. The time-weighted result
+    // must match the value saved by the build before data age was added.
+    DataStore store;
+    const auto sample = store.LoadFromJson("tests/data/latency-500hz-8000hz.json");
+    Check(sample.has_value(), "The saved latency sample must load");
+    const auto saved = Analyzer::FitLatency(*sample);
+    const auto savedAge = Analyzer::FitLatency(*sample, 4, LatencyBinning::Arrival);
+    std::cout << std::setprecision(17) << "Saved sample pipeline=" << saved.differenceMs << " spread=" << saved.spreadMs
+              << " cycles=" << saved.matchedCycles << " data age=" << savedAge.differenceMs << " cycles=" << savedAge.matchedCycles
+              << std::setprecision(6) << '\n';
+    Check(saved.valid && saved.matchedCycles == 19 && saved.matches.size() == 60 &&
+          std::abs(saved.differenceMs - 0.22843188218303112) < 1e-9 && std::abs(saved.spreadMs - 0.2573696384176287) < 1e-9,
+          "The time-weighted result of a saved recording must not change");
+    // A at 500 Hz carries (2 - 0.125) / 2 ms more sampling age than B at 8 kHz.
+    Check(savedAge.valid && std::abs(saved.differenceMs - savedAge.differenceMs - 0.9375) < 0.25,
+          "The saved 500 Hz recording must show the expected data age offset");
+    std::cout << "Pipeline and data age checks passed.\n";
+}
+
 static void RunMouseLibraryChecks() {
     using namespace RLA;
     MouseLibrary library;
@@ -1149,6 +1233,52 @@ static void RunMouseLibraryChecks() {
     const auto allRow=std::find_if(allRanks.begin(),allRanks.end(),[&](const auto& value){return value.setupId==sa;});
     Check(allRow!=allRanks.end() && allRow->recordings==5 && library.DirectRuns(sb,sa,-1).recordings==4,
           "Combined ranking must keep legacy data and count each recording once");
+    {
+        // Data age is its own result id. It must not change pipeline rankings.
+        const auto pipelineBefore=library.DirectRuns(sb,sa,LatencyMethod::PipelineRanking);
+        auto ageFit=Analyzer::FitLatency(session,4,LatencyBinning::Arrival);
+        Check(ageFit.valid,"The shared test recording must have a data age result");
+        Check(!library.AddComparison(session,fit,LatencyMethod::DataAge) && !library.AddComparison(session,ageFit,LatencyMethod::Pipeline),
+              "A saved method id must match the bin rule of its fit");
+        const auto count=library.Comparisons().size();
+        ageFit.differenceMs=-3;
+        Check(library.AddComparison(session,ageFit,LatencyMethod::DataAge) && library.Comparisons().size()==count+1,
+              "Data age must be saved beside the pipeline result of the same recording");
+        ageFit.differenceMs=-4;
+        Check(library.AddComparison(session,ageFit,LatencyMethod::DataAge) && library.Comparisons().size()==count+1,
+              "Re-analysing must replace the saved data age result");
+        const auto pipelineAfter=library.DirectRuns(sb,sa,LatencyMethod::PipelineRanking);
+        const auto pipelineRanks=library.Ranking(LatencyMethod::PipelineRanking);
+        const auto pipelineRow=std::find_if(pipelineRanks.begin(),pipelineRanks.end(),[&](const auto& value){return value.setupId==sa;});
+        Check(pipelineAfter.recordings==pipelineBefore.recordings && pipelineAfter.latestMs==pipelineBefore.latestMs &&
+              pipelineAfter.fastestMs==pipelineBefore.fastestMs && pipelineRow!=pipelineRanks.end() && pipelineRow->recordings==5,
+              "Pipeline rankings must ignore data age results");
+        const auto ageRanks=library.Ranking(LatencyMethod::DataAge);
+        double ageA=0,ageB=0; size_t ageRecordings=0;
+        for (const auto& value : ageRanks) {
+            if (value.setupId==sa) { ageA=value.relativeMs; ageRecordings=value.recordings; }
+            if (value.setupId==sb) ageB=value.relativeMs;
+        }
+        const auto ageDirect=library.DirectRuns(sb,sa,LatencyMethod::DataAge);
+        Check(ageRecordings==1 && std::abs(ageB-ageA+4)<1e-8 && ageDirect.recordings==1 && std::abs(ageDirect.latestMs+4)<1e-9,
+              "Data age rankings must use only data age results");
+        // Modelled slider view: P + f x T with T from each setup's Hz.
+        auto relative=[](const std::vector<MouseRank>& rows,const std::string& id) {
+            for (const auto& value : rows) if (value.setupId==id) return value.relativeMs;
+            return std::nan("");
+        };
+        const auto modelled=library.WithSamplingAge(pipelineRanks,0.5);
+        Check(std::abs(relative(modelled,sb)-relative(modelled,sa)-(relative(pipelineRanks,sb)-relative(pipelineRanks,sa))-0.5*(0.25-0.125))<1e-9 &&
+              std::abs(relative(modelled,sc)-relative(modelled,sa)-(relative(pipelineRanks,sc)-relative(pipelineRanks,sa))-0.5*(1.0-0.125))<1e-9,
+              "The sampling age slider must add f x T to each setup");
+        for (size_t i=1;i<modelled.size();++i) if (modelled[i].group && modelled[i].group==modelled[i-1].group)
+            Check(modelled[i].place==modelled[i-1].place+1 && modelled[i].relativeMs>=modelled[i-1].relativeMs,
+                  "The sampling age slider must re-sort places within each group");
+        const auto unchanged=library.WithSamplingAge(pipelineRanks,0);
+        Check(unchanged.size()==pipelineRanks.size() && std::equal(unchanged.begin(),unchanged.end(),pipelineRanks.begin(),
+              [](const auto& x,const auto& y){return x.setupId==y.setupId && x.relativeMs==y.relativeMs && x.place==y.place;}),
+              "A zero sampling age must leave the pipeline ranking unchanged");
+    }
     for (int rate : {125,250,500,1000,2000,4000,8000}) {
         const auto recording=LatencySession(0,rate,rate);
         std::cout << "Rate expected=" << rate << " detected=" << MouseLibrary::DetectRate(recording.eventsA,recording.qpcFrequency) << '\n';
@@ -1176,6 +1306,9 @@ static void RunMouseLibraryChecks() {
     MouseLibrary restored; std::string error;
     Check(restored.Load(path,error) && restored.Comparisons().size()==library.Comparisons().size() && restored.BoundSetup("hid-b")==sb,
           "Profiles, links, and comparisons must survive restart");
+    Check(std::any_of(restored.Comparisons().begin(),restored.Comparisons().end(),[](const auto& run){return run.method==LatencyMethod::DataAge;}) &&
+          std::any_of(restored.Comparisons().begin(),restored.Comparisons().end(),[](const auto& run){return run.method==LatencyMethod::Pipeline;}),
+          "Pipeline and data age results must both survive restart");
     auto deleted=library;
     const auto first=deleted.Comparisons().front();
     const auto runCount=deleted.Comparisons().size();
@@ -1267,24 +1400,27 @@ int main(int argc, char** argv) {
             if (argc>3) { RLA::DataStore store; auto loaded=store.LoadFromJson(argv[3]); Check(loaded.has_value(),"Could not load soak recording"); session=std::move(*loaded); }
             RLA::AppRegressionAccess::RunSoak(session, argc > 2 ? std::stoi(argv[2]) : 360); return 0;
         }
-        // Optional targeted check on a local recording. No recording is copied
-        // into the repository. The expected manual scale is supplied by the user.
+        // Optional targeted check on a local recording. The only recording in
+        // the repository is the fixed sample in tests/data. The expected manual scale is supplied by the user.
         if (argc > 1) {
             RLA::DataStore store;
             const auto recording = store.LoadFromJson(argv[1]);
             Check(recording.has_value(), "Could not load the supplied recording");
             if (argc > 2 && std::string_view(argv[2]) == "--latency") {
+                for (auto binning : {RLA::LatencyBinning::TimeWeighted, RLA::LatencyBinning::Arrival}) {
                 const auto started = std::chrono::steady_clock::now();
-                const auto latency = RLA::Analyzer::FitLatency(*recording);
+                const auto latency = RLA::Analyzer::FitLatency(*recording, 4, binning);
                 std::array<size_t,4> features{};
                 for (const auto& match:latency.matches) ++features[static_cast<size_t>(match.feature)];
-                std::cout << "Latency valid=" << latency.valid << " B-A=" << latency.differenceMs
+                std::cout << (binning == RLA::LatencyBinning::Arrival ? "Data age (arrival time)" : "Pipeline (time-weighted)")
+                          << " valid=" << latency.valid << " B-A=" << latency.differenceMs
                           << " ms MAD=" << latency.spreadMs << " bins=" << latency.binMs << " cycles=" << latency.matchedCycles
                           << " points=" << latency.matches.size() << " candidates=" << latency.candidatePairs << " elapsed="
                           << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-started).count() << " ms\n"
                           << "Minimum=" << features[0] << " Falling=" << features[1]
                           << " Rising=" << features[2] << " Maximum=" << features[3] << '\n'
                           << latency.message << '\n';
+                }
                 return 0;
             }
             const auto fit = RLA::Analyzer::FitScaleB(*recording);
@@ -1306,6 +1442,7 @@ int main(int argc, char** argv) {
         RLA::AppRegressionAccess::RunCaptureTest();
         RLA::RendererRegressionAccess::Run();
         RunLatencyChecks();
+        RunDataAgeChecks();
         RunMouseLibraryChecks();
         RunAutosaveChecks();
         RunBinningChecks();
