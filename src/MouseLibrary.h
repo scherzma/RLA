@@ -4,6 +4,13 @@
 #include <map>
 
 namespace RLA {
+// Saved result ids. 0-4 are time-weighted pipeline results; 4 is the current
+// feature set. 5 is the arrival-time data-age result of the same features.
+// Rankings with PipelineRanking use the newest pipeline id of each recording.
+namespace LatencyMethod {
+constexpr int Pipeline = 4, DataAge = 5, Last = DataAge, PipelineRanking = -1;
+constexpr bool IsDataAge(int method) { return method == DataAge; }
+}
 struct SavedMouse { std::string id, name; };
 struct MouseSetup {
     std::string id, mouseId, connection, label;
@@ -11,7 +18,7 @@ struct MouseSetup {
 };
 struct SavedComparison {
     std::string recordingKey, setupA, setupB, savedAt;
-    int method = 4;
+    int method = LatencyMethod::Pipeline;
     double differenceMs = 0, spreadMs = 0, binMs = 0;
     size_t cycles = 0;
     bool enabled = true;
@@ -46,12 +53,17 @@ public:
     RecordingMouse Identity(const std::string& setupId, std::string devicePath = {}) const;
     void ImportIdentity(const RecordingMouse& identity);
     // One result per recording and method. A rerun replaces it instead of adding weight.
+    // DataAge requires an arrival-time fit; other methods require a time-weighted fit.
     bool AddComparison(const RecordingSession& session, const LatencyFit& fit, int method);
     void SetEnabled(size_t index, bool enabled);
     void DeleteMouse(const std::string& id);
     void DeleteSetup(const std::string& id);
     void DeleteComparison(const std::string& key, int method);
     std::vector<MouseRank> Ranking(int method) const;
+    // Modelled view of a pipeline ranking: adds fraction * T (T = 1000 / Hz of
+    // each setup) and re-sorts each group. 0.5 approximates mean data age.
+    std::vector<MouseRank> WithSamplingAge(std::vector<MouseRank> rows, double fraction) const;
+    double ReportIntervalMs(const std::string& setupId) const; // 0 if unknown.
     DirectRunSummary DirectRuns(const std::string& setup, const std::string& reference, int method) const;
     bool Load(const std::filesystem::path& path, std::string& error);
     std::string Save(const std::filesystem::path& path) const; // Empty string means success.
