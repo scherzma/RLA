@@ -511,7 +511,7 @@ void App::StartLatencyAnalysis() {
 }
 
 const LatencyFit& App::MatchFit() const {
-    if (latencyFit_.valid && dataAgeFit_.valid) return matchView_ ? dataAgeFit_ : latencyFit_;
+    if (latencyFit_.valid && dataAgeFit_.valid) return matchView_ == 0 ? dataAgeFit_ : latencyFit_;
     return dataAgeFit_.valid ? dataAgeFit_ : latencyFit_;
 }
 
@@ -572,12 +572,12 @@ void App::RenderLatencyControls() {
             fit.spreadMs,fit.matchedCycles,GetLatencySummary(fit).c_str());
         ImGui::PopStyleColor();
     };
-    resultLine("Pipeline (time-weighted)",latencyFit_);
     resultLine("Data age (arrival time)",dataAgeFit_);
+    resultLine("Pipeline (time-weighted)",latencyFit_);
     if (ImGui::Button("Review / save result")) { showLibrary_=true; libraryPage_=1; }
     if (latencyFit_.valid && dataAgeFit_.valid) {
         ImGui::SameLine(); ImGui::SetNextItemWidth(160);
-        if (ImGui::Combo("Matches", &matchView_, "Pipeline\0Data age\0")) { SelectClosestMatch(); focusLatencyMatch_=true; }
+        if (ImGui::Combo("Matches", &matchView_, "Data age\0Pipeline\0")) { SelectClosestMatch(); focusLatencyMatch_=true; }
     }
     const auto& shown=MatchFit();
     ImGui::Checkbox("Highlight selected match", &highlightLatencyMatch_);
@@ -595,7 +595,7 @@ void App::RenderLatencyControls() {
     }
     if (ImGui::TreeNode("Latency details")) {
         ImGui::TextWrapped("%s", shown.message.c_str());
-        ImGui::TextWrapped("Pipeline spreads each report over the time since the previous report, so it excludes the sampling age of the report interval. Data age keeps counts at arrival time and adds about half an interval per mouse. Matches below are from %s.",
+        ImGui::TextWrapped("Data age keeps counts at their arrival time: when the movement reaches the PC. Pipeline spreads each report over the time since the previous report, so it leaves out the sampling age of about half an interval per mouse. Matches below are from %s.",
             &shown==&dataAgeFit_ ? "Data age" : "Pipeline");
         ImGui::TextUnformatted("Spread describes variation between points, not measurement accuracy. Select a row to view it.");
         if (ImGui::BeginTable("Matched features", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, 130))) {

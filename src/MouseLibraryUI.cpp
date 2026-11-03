@@ -321,7 +321,7 @@ void App::RenderMouseLibrary() {
         ImGui::TextWrapped("Analyze a recording with both mice before adding a result.");
         if (ImGui::Button("Go to analysis")) showLibrary_=false;
     } else {
-        for (const auto* fit : {&latencyFit_,&dataAgeFit_}) {
+        for (const auto* fit : {&dataAgeFit_,&latencyFit_}) {
             const char* label=fit==&latencyFit_ ? "Pipeline (time-weighted)" : "Data age (arrival time)";
             if (fit->valid) ImGui::TextWrapped("%s: %s",label,GetLatencySummary(*fit).c_str());
             else ImGui::TextDisabled("%s: failed its checks.",label);
@@ -342,22 +342,12 @@ void App::RenderMouseLibrary() {
     ImGui::EndDisabled();
     ImGui::SeparatorText("Relative latency ranking");
     ImGui::SetNextItemWidth(220);
-    if (ImGui::Combo("Result",&rankingView_,"Pipeline (time-weighted)\0Data age (arrival time)\0")) rankingDirty_=true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pipeline excludes the sampling delay of the report interval.\nData age includes it: about half an interval per mouse, e.g. +1 ms at 500 Hz.");
-    const bool dataAgeView=rankingView_==1;
+    if (ImGui::Combo("Result",&rankingView_,"Data age (arrival time)\0Pipeline (time-weighted)\0")) rankingDirty_=true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Data age: when the movement reaches the PC, including the sampling delay of the polling interval.\nPipeline: the same without the sampling delay, about half an interval per mouse (1 ms at 500 Hz).");
+    const bool dataAgeView=rankingView_==0;
     const int rankingMethod=dataAgeView ? LatencyMethod::DataAge : LatencyMethod::PipelineRanking;
-    if (!dataAgeView) {
-        ImGui::SetNextItemWidth(220);
-        if (ImGui::SliderFloat("Add sampling age",&samplingAge_,0.0f,1.0f,"%.2f x T",ImGuiSliderFlags_AlwaysClamp)) rankingDirty_=true;
-        bool hovered=ImGui::IsItemHovered();
-        ImGui::SameLine(); ImGui::TextDisabled("(modelled)");
-        hovered=hovered || ImGui::IsItemHovered();
-        if (hovered)
-            ImGui::SetTooltip("Adds f x T to each setup, T = 1000 / Hz.\n0 = Pipeline, 0.5 = mean data age, 1 = oldest sample in a report.\nComputed from detected Hz, not measured. Use Data age for the measured result.");
-    }
-    const double ageFraction=dataAgeView ? 0.0 : samplingAge_;
     if (rankingDirty_) {
-        try { ranking_=mouseLibrary_.WithSamplingAge(mouseLibrary_.Ranking(rankingMethod),ageFraction); }
+        try { ranking_=mouseLibrary_.Ranking(rankingMethod); }
         catch (const std::exception& e) { ranking_.clear(); libraryMessage_=e.what(); }
         rankingDirty_=false;
     }
@@ -387,10 +377,7 @@ void App::RenderMouseLibrary() {
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(row.setupId).c_str());
                 ImGui::TableNextColumn(); ImGui::Text("%+.3f",row.relativeMs-reference->relativeMs);
                 const bool isReference=row.setupId==reference->setupId;
-                auto direct=mouseLibrary_.DirectRuns(row.setupId,reference->setupId,rankingMethod);
-                // The modelled shift is constant for a pair, so the fastest run stays the same run.
-                const double ageShift=ageFraction*(mouseLibrary_.ReportIntervalMs(row.setupId)-mouseLibrary_.ReportIntervalMs(reference->setupId));
-                direct.fastestMs+=ageShift; direct.latestMs+=ageShift;
+                const auto direct=mouseLibrary_.DirectRuns(row.setupId,reference->setupId,rankingMethod);
                 auto resultCell=[&](const char* id,double value,const std::string& key) {
                     ImGui::TableNextColumn();
                     if (isReference) { ImGui::TextDisabled("Reference"); return; }
@@ -416,20 +403,20 @@ void App::RenderMouseLibrary() {
     }
     if (!openRankingKey.empty()) OpenRankedRun(openRankingKey);
     if (ImGui::TreeNode("How rankings work")) {
-        ImGui::TextWrapped("Typical uses the median for each mouse pair and combines linked comparisons. A single fast run can differ from Typical. Fastest means the lowest measured difference, not the most repeatable result. Separate tables are needed only when no comparison connects their mice. Pipeline and Data age results are ranked separately; select one under Result.");
+        ImGui::TextWrapped("Typical uses the median for each mouse pair and combines linked comparisons. A single fast run can differ from Typical. Fastest means the lowest measured difference, not the most repeatable result. Separate tables are needed only when no comparison connects their mice. Data age and Pipeline are ranked separately; select one under Result. Recordings saved before Data age existed use a calculated Data age: Pipeline + (T_B - T_A)/2.");
         ImGui::TreePop();
     }
     if (ImGui::CollapsingHeader("Saved runs",ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextWrapped("%s",dataAgeView ? "All accepted runs are retained. Showing Data age results. Most stable marks the smallest spread against the same reference; ties favor more cycles." :
+        ImGui::TextWrapped("%s",dataAgeView ?
+            "All accepted runs are retained. Showing Data age results; calc. means calculated from the Pipeline result. Most stable marks the smallest spread against the same reference; ties favor more cycles." :
             "All accepted runs are retained. Showing Pipeline results. Most stable marks the smallest spread against the same reference; ties favor more cycles. A recording counts once in rankings, with the All result preferred.");
-        const auto& runs=mouseLibrary_.Comparisons();
-        auto inView=[&](const SavedComparison& run) { return LatencyMethod::IsDataAge(run.method)==dataAgeView; };
+        const auto rows=mouseLibrary_.ResultRows(dataAgeView);
         std::map<std::pair<std::string,std::string>,size_t> bestRuns;
-        for (size_t i=0;i<runs.size();++i) {
-            const auto& run=runs[i];
-            if (!run.enabled || !inView(run)) continue;
+        for (size_t i=0;i<rows.size();++i) {
+            const auto& run=rows[i].run;
+            if (!run.enabled) continue;
             const auto [entry,inserted]=bestRuns.emplace(std::make_pair(run.setupA,run.setupB),i);
-            const auto& previous=runs[entry->second];
+            const auto& previous=rows[entry->second].run;
             if (!inserted && (run.spreadMs<previous.spreadMs || (run.spreadMs==previous.spreadMs && run.cycles>previous.cycles))) entry->second=i;
         }
         std::string openKey;
@@ -439,18 +426,19 @@ void App::RenderMouseLibrary() {
             ImGui::TableSetupColumn("Test B",ImGuiTableColumnFlags_WidthStretch);
             for (const char* name : {"Method","B-A ms","Spread ms","Cycles","Run","Remove"}) ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
             ImGui::TableSetupScrollFreeze(0,1); ImGui::TableHeadersRow();
-            for (size_t i=0;i<runs.size();++i) {
-                const auto& run=runs[i];
-                if (!inView(run)) continue;
+            for (size_t i=0;i<rows.size();++i) {
+                const auto& [run,index,calculated]=rows[i];
                 const auto bestEntry=bestRuns.find({run.setupA,run.setupB});
                 const bool best=bestEntry!=bestRuns.end() && bestEntry->second==i;
                 ImGui::PushID(static_cast<int>(i)); ImGui::TableNextRow(); ImGui::TableNextColumn();
                 bool enabled=run.enabled; ImGui::BeginDisabled(libraryReadOnly_);
-                if (ImGui::Checkbox("##Use run",&enabled)) { mouseLibrary_.SetEnabled(i,enabled); LibraryChanged(); }
+                if (ImGui::Checkbox("##Use run",&enabled)) { mouseLibrary_.SetEnabled(index,enabled); LibraryChanged(); }
+                if (calculated && ImGui::IsItemHovered()) ImGui::SetTooltip("Uses the Pipeline result of this recording, so this also changes the Pipeline ranking.");
                 ImGui::EndDisabled();
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(run.setupA).c_str());
                 ImGui::TableNextColumn(); ImGui::TextUnformatted(mouseLibrary_.Label(run.setupB).c_str());
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(run.method==LatencyMethod::DataAge ? "Data age" : run.method==4 ? "All" : run.method==2 ? "Min + half" : run.method==1 ? "Half-height" : run.method==0 ? "Minima" : "Maxima");
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(calculated ? "Data age calc." : run.method==LatencyMethod::DataAge ? "Data age" : run.method==4 ? "All" : run.method==2 ? "Min + half" : run.method==1 ? "Half-height" : run.method==0 ? "Minima" : "Maxima");
+                if (calculated && ImGui::IsItemHovered()) ImGui::SetTooltip("Calculated: Pipeline result + (T_B - T_A)/2 from the detected Hz.\nOpen and analyze the run to measure it.");
                 ImGui::TableNextColumn(); ImGui::Text("%+.3f",run.differenceMs);
                 ImGui::TableNextColumn(); ImGui::Text("%.3f",run.spreadMs);
                 ImGui::TableNextColumn(); ImGui::Text("%zu",run.cycles);
@@ -458,12 +446,17 @@ void App::RenderMouseLibrary() {
                 if (ImGui::SmallButton(best ? "Most stable" : "Open")) openKey=run.recordingKey;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",run.savedAt.c_str());
                 ImGui::EndDisabled();
-                ImGui::TableNextColumn(); ImGui::BeginDisabled(libraryReadOnly_ || state_==AppState::Recording);
-                if (ImGui::SmallButton("Delete")) {
-                    deleteKind_="result"; deleteId_=run.recordingKey; deleteMethod_=run.method;
-                    deleteLabel_=mouseLibrary_.Label(run.setupA)+" vs "+mouseLibrary_.Label(run.setupB)+" ("+run.savedAt+")";
+                ImGui::TableNextColumn();
+                if (calculated) ImGui::TextDisabled("--");
+                else {
+                    ImGui::BeginDisabled(libraryReadOnly_ || state_==AppState::Recording);
+                    if (ImGui::SmallButton("Delete")) {
+                        deleteKind_="result"; deleteId_=run.recordingKey; deleteMethod_=run.method;
+                        deleteLabel_=mouseLibrary_.Label(run.setupA)+" vs "+mouseLibrary_.Label(run.setupB)+" ("+run.savedAt+")";
+                    }
+                    ImGui::EndDisabled();
                 }
-                ImGui::EndDisabled(); ImGui::PopID();
+                ImGui::PopID();
             }
             ImGui::EndTable();
         }

@@ -109,8 +109,7 @@ private:
     std::deque<RecordingSession> runsToKeep_;
     std::string libraryMessage_, comparisonMessage_;
     std::vector<MouseRank> ranking_;
-    int rankingView_ = 0; // 0: pipeline (time-weighted), 1: data age (arrival time)
-    float samplingAge_ = 0.5f; // Pipeline view only: modelled sampling age added, as a fraction of T. 0.5 = mean age.
+    int rankingView_ = 0; // 0: data age (arrival time, default), 1: pipeline (time-weighted)
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
     int connectionIndex_ = 1;
@@ -142,7 +141,7 @@ private:
     LatencyFit latencyFit_;  // Pipeline: time-weighted bins.
     LatencyFit dataAgeFit_;  // Data age: arrival-time bins.
     std::future<LatencyResults> latencyTask_;
-    int matchView_ = 0; // Matches shown when both fits are valid. 0: pipeline, 1: data age.
+    int matchView_ = 0; // Matches shown when both fits are valid. 0: data age (default), 1: pipeline.
     const LatencyFit& MatchFit() const;
     void SelectClosestMatch();
     uint64_t sessionRevision_ = 0, latencyRevision_ = 0;
