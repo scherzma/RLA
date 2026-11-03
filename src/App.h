@@ -110,7 +110,7 @@ private:
     std::string libraryMessage_, comparisonMessage_;
     std::vector<MouseRank> ranking_;
     int rankingView_ = 0; // 0: pipeline (time-weighted), 1: data age (arrival time)
-    float samplingAge_ = 0; // Pipeline view only: modelled sampling age added, as a fraction of T.
+    float samplingAge_ = 0.5f; // Pipeline view only: modelled sampling age added, as a fraction of T. 0.5 = mean age.
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
     int connectionIndex_ = 1;
