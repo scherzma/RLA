@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(RLA VERSION 1.0.0 LANGUAGES CXX RC)
+project(RLA VERSION 1.1.0 LANGUAGES CXX RC)
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "RLA requires 64-bit Windows.")
 endif()

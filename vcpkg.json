@@ -1,6 +1,6 @@
 {
   "name": "rla",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Relative Latency Analyzer for measuring input latency between gaming mice",
   "dependencies": [
     {
