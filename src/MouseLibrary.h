@@ -7,6 +7,8 @@ namespace RLA {
 // Saved result ids. 0-4 are time-weighted pipeline results; 4 is the current
 // feature set. 5 is the arrival-time data-age result of the same features.
 // Rankings with PipelineRanking use the newest pipeline id of each recording.
+// Rankings with DataAge use the measured result, or calculate it from the
+// newest pipeline result when a recording has none (see ResultRows).
 namespace LatencyMethod {
 constexpr int Pipeline = 4, DataAge = 5, Last = DataAge, PipelineRanking = -1;
 constexpr bool IsDataAge(int method) { return method == DataAge; }
@@ -22,6 +24,11 @@ struct SavedComparison {
     double differenceMs = 0, spreadMs = 0, binMs = 0;
     size_t cycles = 0;
     bool enabled = true;
+};
+struct ResultRow {
+    SavedComparison run;
+    size_t index = 0;        // Stored comparison this row comes from.
+    bool calculated = false; // Data age = pipeline + (T_B - T_A) / 2, not measured.
 };
 struct DirectRunSummary {
     size_t recordings = 0;
@@ -60,9 +67,10 @@ public:
     void DeleteSetup(const std::string& id);
     void DeleteComparison(const std::string& key, int method);
     std::vector<MouseRank> Ranking(int method) const;
-    // Modelled view of a pipeline ranking: adds fraction * T (T = 1000 / Hz of
-    // each setup) and re-sorts each group. 0.5 approximates mean data age.
-    std::vector<MouseRank> WithSamplingAge(std::vector<MouseRank> rows, double fraction) const;
+    // Rows of one result kind. Pipeline: every pipeline result (ids 0-4). Data age:
+    // the measured result, or for a recording without one, its newest pipeline
+    // result plus (T_B - T_A) / 2 with T = 1000 / detected Hz of each setup.
+    std::vector<ResultRow> ResultRows(bool dataAge) const;
     double ReportIntervalMs(const std::string& setupId) const; // 0 if unknown.
     DirectRunSummary DirectRuns(const std::string& setup, const std::string& reference, int method) const;
     bool Load(const std::filesystem::path& path, std::string& error);
@@ -71,6 +79,7 @@ public:
     static std::string RecordingKey(const RecordingSession& session);
     static int DetectRate(const std::vector<MouseEvent>& events, double frequency);
 private:
+    std::vector<SavedComparison> Selected(int method) const; // Enabled runs for rankings.
     std::vector<SavedMouse> mice_;
     std::vector<MouseSetup> setups_;
     std::map<std::string, std::string> bindings_;

@@ -43,22 +43,6 @@ double Median(std::vector<double> values) {
     std::nth_element(values.begin(), middle, values.end());
     return values.size()%2 ? *middle : (*middle + *std::max_element(values.begin(), middle)) * 0.5;
 }
-std::vector<const SavedComparison*> SelectedRuns(const std::vector<SavedComparison>& comparisons, int method) {
-    std::vector<const SavedComparison*> runs;
-    if (method>=0) {
-        for (const auto& run:comparisons) if (run.enabled && run.method==method) runs.push_back(&run);
-        return runs;
-    }
-    // Pipeline ranking: one result per recording, the newest pipeline method.
-    std::map<std::tuple<std::string,std::string,std::string>,const SavedComparison*> byRecording;
-    for (const auto& run:comparisons) {
-        if (!run.enabled || LatencyMethod::IsDataAge(run.method)) continue;
-        auto& selected=byRecording[std::make_tuple(run.recordingKey,run.setupA,run.setupB)];
-        if (!selected || run.method>selected->method) selected=&run;
-    }
-    for (const auto& [key,run]:byRecording) runs.push_back(run);
-    return runs;
-}
 }
 
 const SavedMouse* MouseLibrary::FindMouse(const std::string& id) const {
@@ -244,30 +228,66 @@ double MouseLibrary::ReportIntervalMs(const std::string& setupId) const {
     return setup && setup->pollingHz>0 ? 1000.0/setup->pollingHz : 0.0;
 }
 
-std::vector<MouseRank> MouseLibrary::WithSamplingAge(std::vector<MouseRank> rows, double fraction) const {
-    if (!std::isfinite(fraction) || fraction==0) return rows;
-    std::map<int,double> fastest;
-    for (auto& row : rows) if (row.group) {
-        row.relativeMs+=fraction*ReportIntervalMs(row.setupId);
-        const auto [entry,inserted]=fastest.emplace(row.group,row.relativeMs);
-        if (!inserted) entry->second=(std::min)(entry->second,row.relativeMs);
+std::vector<ResultRow> MouseLibrary::ResultRows(bool dataAge) const {
+    using Key=std::tuple<std::string,std::string,std::string>;
+    std::vector<ResultRow> rows;
+    std::set<Key> measured;
+    for (size_t i=0;i<comparisons_.size();++i) {
+        const auto& run=comparisons_[i];
+        if (LatencyMethod::IsDataAge(run.method)!=dataAge) continue;
+        rows.push_back({run,i,false});
+        if (dataAge) measured.insert({run.recordingKey,run.setupA,run.setupB});
     }
-    for (auto& row : rows) if (row.group) row.relativeMs-=fastest[row.group];
-    std::stable_sort(rows.begin(),rows.end(),[](const MouseRank& a,const MouseRank& b) {
-        if ((a.group==0)!=(b.group==0)) return a.group!=0;
-        return a.group==b.group ? a.relativeMs<b.relativeMs : a.group<b.group;
-    });
-    std::map<int,int> places;
-    for (auto& row : rows) if (row.group) row.place=++places[row.group];
+    if (!dataAge) return rows;
+    // Data age = pipeline + mean sampling age difference. Measured results agree
+    // with this relation; it fills recordings saved before data age existed.
+    std::map<Key,size_t> sources;
+    for (size_t i=0;i<comparisons_.size();++i) {
+        const auto& run=comparisons_[i];
+        const Key key{run.recordingKey,run.setupA,run.setupB};
+        if (LatencyMethod::IsDataAge(run.method) || measured.count(key)) continue;
+        const auto [entry,inserted]=sources.emplace(key,i);
+        if (!inserted && run.method>comparisons_[entry->second].method) entry->second=i;
+    }
+    for (const auto& [key,index] : sources) {
+        const auto& source=comparisons_[index];
+        const double intervalA=ReportIntervalMs(source.setupA), intervalB=ReportIntervalMs(source.setupB);
+        if (intervalA<=0 || intervalB<=0) continue;
+        ResultRow row{source,index,true};
+        row.run.method=LatencyMethod::DataAge;
+        row.run.differenceMs+=(intervalB-intervalA)/2;
+        rows.push_back(std::move(row));
+    }
     return rows;
 }
+
+std::vector<SavedComparison> MouseLibrary::Selected(int method) const {
+    std::vector<SavedComparison> runs;
+    if (method==LatencyMethod::DataAge) {
+        for (auto& row : ResultRows(true)) if (row.run.enabled) runs.push_back(std::move(row.run));
+        return runs;
+    }
+    if (method>=0) {
+        for (const auto& run : comparisons_) if (run.enabled && run.method==method) runs.push_back(run);
+        return runs;
+    }
+    // Pipeline ranking: one result per recording, the newest pipeline method.
+    std::map<std::tuple<std::string,std::string,std::string>,const SavedComparison*> byRecording;
+    for (const auto& run : comparisons_) {
+        if (!run.enabled || LatencyMethod::IsDataAge(run.method)) continue;
+        auto& selected=byRecording[std::make_tuple(run.recordingKey,run.setupA,run.setupB)];
+        if (!selected || run.method>selected->method) selected=&run;
+    }
+    for (const auto& [key,run] : byRecording) runs.push_back(*run);
+    return runs;
+}
+
 
 DirectRunSummary MouseLibrary::DirectRuns(const std::string& setup, const std::string& reference, int method) const {
     DirectRunSummary result;
     std::string latestTime;
     if (setup==reference) return result;
-    for (const auto* selected : SelectedRuns(comparisons_,method)) {
-        const auto& run=*selected;
+    for (const auto& run : Selected(method)) {
         double delta;
         if (run.setupA==reference && run.setupB==setup) delta=run.differenceMs;
         else if (run.setupB==reference && run.setupA==setup) delta=-run.differenceMs;
@@ -290,8 +310,7 @@ std::vector<MouseRank> MouseLibrary::Ranking(int method) const {
     std::vector<MouseRank> rows;
     for (const auto& setup : setups_) { indices[setup.id] = rows.size(); rows.push_back({setup.id}); }
     std::map<Pair, std::vector<double>> differences;
-    for (const auto* selected : SelectedRuns(comparisons_,method)) {
-        const auto& c=*selected;
+    for (const auto& c : Selected(method)) {
         const auto ai = indices.find(c.setupA), bi = indices.find(c.setupB);
         if (ai == indices.end() || bi == indices.end() || ai->second == bi->second) continue;
         const auto a = ai->second, b = bi->second;
