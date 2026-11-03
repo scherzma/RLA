@@ -11,7 +11,7 @@ Move both mice together. RLA records every report from each mouse with a high-re
 ## Highlights
 
 - **Two mice, one recording.** Both mice share the same clock, so there is no external reference to calibrate.
-- **Two results per run.** **Pipeline** compares the delay after each mouse samples its motion. **Data age** also includes how old the data already is when it arrives, which depends on the polling rate. [Read more](#pipeline-and-data-age).
+- **Data age: when the movement reaches the PC.** The main result includes everything from the hand's motion to the application: sensor, firmware, link, Windows, and the sampling delay of the polling rate. **Pipeline** is the same without the sampling delay. [Read more](#data-age-and-pipeline).
 - **Checks before results.** Matching minima, maxima, and slope points must agree in shape and direction over at least three movement cycles. Pauses, independent movement, and conflicting estimates are rejected.
 - **Mouse library.** Name each physical mouse, keep wired and wireless setups apart, and rank all mice against a reference. The polling rate is detected from each recording.
 - **Portable.** One executable. No installer, no runtime, no driver.
@@ -36,11 +36,11 @@ The [installation guide](docs/INSTALL.md) covers updates, saved files, and troub
 3. It finds the same features in both curves: minima, maxima, and the 50 % points on each slope. A feature counts only if the shape and direction around it match.
 4. Each matched cycle votes once. **B−A** is the median, and **Spread** is how much the matched points vary.
 
-![RLA after Analyze latency: both curves, the Pipeline and Data age results, and the matched features.](docs/images/movement.png)
+![RLA after Analyze latency: both curves, the Data age and Pipeline results, and the matched features.](docs/images/movement.png)
 
-*A real recording: OP1 8k v2 (A, wired, 8000 Hz) and WLMouse Miao (B, wireless, 1000 Hz). Pipeline: the Miao is 0.32 ms faster. Data age: the OP1 is 0.14 ms faster, because the Miao's 1 ms report interval adds about (1 − 0.125) / 2 = 0.44 ms of sampling age.*
+*A real recording: OP1 8k v2 (A, wired, 8000 Hz) and WLMouse Miao (B, wireless, 1000 Hz). Data age: the OP1 is 0.14 ms faster. Pipeline: the Miao is 0.32 ms faster; it loses in Data age because its 1 ms report interval adds about (1 − 0.125) / 2 = 0.44 ms of sampling age.*
 
-## Pipeline and data age
+## Data age and pipeline
 
 A mouse sends one report per polling interval T. Each report holds the motion of the whole interval before it. On average, that motion is T/2 old when the report is sent.
 
@@ -48,8 +48,8 @@ A mouse sends one report per polling interval T. Each report holds the motion of
 
 | Result | What it measures | Use it for |
 | --- | --- | --- |
-| **Pipeline (time-weighted)** | Delay after sampling: sensor, firmware, link, and Windows. The counts of each report are spread over its interval, which removes the sampling age. | Comparing the hardware and firmware path, independent of the polling rate |
-| **Data age (arrival time)** | Pipeline plus the mean sampling age, T/2. The counts stay at the time they arrive. | What the PC, and therefore the cursor, actually receives |
+| **Data age (arrival time)**, default | When the movement reaches the PC: Pipeline plus the mean sampling age T/2. The counts stay at the time they arrive. | Which mouse moves the cursor sooner |
+| **Pipeline (time-weighted)** | Delay after sampling: sensor, firmware, link, and Windows. The counts of each report are spread over its interval, which removes the sampling age. | Is a difference caused by the polling rate, or by the sensor, firmware, or link? |
 
 For B-A: **Data age = Pipeline + (T_B - T_A) / 2**.
 
@@ -57,7 +57,7 @@ For B-A: **Data age = Pipeline + (T_B - T_A) / 2**.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Mean sampling age T/2 | 4 ms | 2 ms | 1 ms | 0.5 ms | 0.25 ms | 0.125 ms | 0.0625 ms |
 
-Example: A at 8000 Hz, B at 500 Hz. If both have the same pipeline delay, Pipeline shows about 0 ms, and Data age shows B about (2 - 0.125) / 2 = 0.94 ms later. The regression checks verify this relation with synthetic recordings at 500 to 8000 Hz to within 0.01 ms.
+Example: A at 8000 Hz, B at 500 Hz. If both have the same pipeline delay, Pipeline shows about 0 ms, and Data age shows B about (2 - 0.125) / 2 = 0.94 ms later. The regression checks verify this relation with synthetic recordings at 500 to 8000 Hz to within 0.01 ms. In 32 real recordings with both results, measured Data age minus Pipeline matched (T_B - T_A) / 2 with a median deviation of 0.017 ms.
 
 ## Library and rankings
 
@@ -65,10 +65,10 @@ Example: A at 8000 Hz, B at 500 Hz. If both have the same pipeline delay, Pipeli
 
 Use one name for each physical mouse and link its wired and wireless connections to it. Each connection and detected polling rate gets its own ranking entry; DPI does not. Add setup notes to compare other settings separately.
 
-![Rankings: both results of the latest recording, the Result selector, the Add sampling age slider, and the ranking against a reference.](docs/images/rankings.png)
+![Rankings: both results of the latest recording, the Result selector, and the Data age ranking against a reference.](docs/images/rankings.png)
 
-- **Result:** choose **Pipeline** (default) or **Data age**. They are ranked separately.
-- **Add sampling age:** in the Pipeline view, adds f × T per setup. It starts at **0.5**, the mean sampling age, so slower polling rates count against a mouse by default. 0 shows the pure pipeline delay, 1 the age of the oldest sample in a report. It is computed from the detected Hz, not measured; **Data age** is the measured counterpart.
+- **Result:** **Data age** (default) or **Pipeline**. They are ranked separately.
+- Recordings saved before Data age existed get a calculated Data age: their Pipeline result + (T_B - T_A) / 2 from the detected Hz. **Saved runs** marks these as *calc.*; opening and analyzing a run measures it.
 - **Typical** combines all enabled runs and sets the order. **Fastest run** and **Latest run** are single runs against the named reference. Click one to open its recording.
 
 **Negative means faster, positive means slower.** Separate tables appear only when no comparison connects their mice. The screenshots show real results from one library, not a general ranking of these mice.
