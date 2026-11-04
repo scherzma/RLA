@@ -3,7 +3,7 @@
 RLA is a Windows x64 desktop app. Use Windows 10 or 11 with DirectX 11 graphics support.
 
 1. Open [GitHub Releases](https://github.com/scherzma/RLA/releases/latest).
-2. Download **RLA-1.2.0-windows-x64.zip** under **Assets**. The automatic source-code archives are not the app.
+2. Download **RLA-1.3.0-windows-x64.zip** under **Assets**. The automatic source-code archives are not the app.
 3. Extract the ZIP into a folder where you have write access.
 4. Open **RLA.exe**. No Visual Studio, Python, vcpkg, or separate C++ runtime installation is needed for the portable release.
 

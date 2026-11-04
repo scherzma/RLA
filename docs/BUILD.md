@@ -22,7 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -VcpkgRoot ..\vc
 
 The script finds the compiler, CMake, and Ninja, then uses your vcpkg checkout. It builds Release/x64 with the static C++ runtime. The first build downloads and compiles dependencies. Internet access is required. It does not install tools or change system environment variables.
 
-`-Test` runs the regression checks. `-Package` creates `out/cmake-release/RLA-1.2.0-windows-x64.zip`. Omit either switch if it is not needed. Do not run tests while taking a measurement.
+`-Test` runs the regression checks. `-Package` creates `out/cmake-release/RLA-1.3.0-windows-x64.zip`. Omit either switch if it is not needed. Do not run tests while taking a measurement.
 
 You can also set `VCPKG_ROOT` for the current shell. Dependencies and their registry baseline are declared in `vcpkg.json` and `vcpkg-configuration.json`. CMake uses the [official vcpkg toolchain integration](https://learn.microsoft.com/en-us/vcpkg/users/buildsystems/cmake-integration).
 
