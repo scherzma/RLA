@@ -1,6 +1,7 @@
 #include "App.h"
 #include <imgui.h>
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <shellapi.h>
 #include <set>
@@ -197,6 +198,109 @@ void App::OpenRankedRun(const std::string& key) {
     showLibrary_=false; statusMessage_="Saved comparison loaded.";
 }
 
+void App::StepAngleBackfill() {
+    if (angleQueue_.empty() || state_==AppState::Recording) return;
+    const auto key=angleQueue_.back(); angleQueue_.pop_back();
+    bool measured=false;
+    try {
+        if (key.size()==64) if (auto session=dataStore_->LoadFromJson(libraryPath_.parent_path()/L"Runs"/(key+".json"))) {
+            const auto fit=Analyzer::FitOrientation(*session);
+            measured=fit.valid && mouseLibrary_.SetAngle(key,fit.angleDeg)>0;
+        }
+    } catch (const std::exception&) {}
+    if (!measured) ++angleQueueFailed_;
+    // Save progress now and then, so leaving the page keeps finished work.
+    if (angleQueue_.empty() || (angleQueueTotal_-angleQueue_.size())%20==0) LibraryChanged();
+}
+void App::RenderPlacement(bool dataAgeView) {
+    StepAngleBackfill();
+    if (!ImGui::CollapsingHeader("Mouse placement")) return;
+    ImGui::TextWrapped("How the two mice sit in your hand shifts the result a little: the hand also rotates, so two mice side by side "
+        "do not turn around at exactly the same moment. RLA tells placements apart by the angle between the two sensors. "
+        "When a pair has runs in both placements, the corrected result is the average of the two, which cancels the shift. "
+        "Tip: swap the two mice halfway through a session.");
+    const auto missing=mouseLibrary_.KeysWithoutAngle();
+    if (!angleQueue_.empty()) ImGui::Text("Measuring angles of saved runs: %zu / %zu",angleQueueTotal_-angleQueue_.size(),angleQueueTotal_);
+    else if (!missing.empty()) {
+        ImGui::BeginDisabled(libraryReadOnly_ || state_==AppState::Recording);
+        if (ImGui::Button(std::format("Measure angles of {} saved runs",missing.size()).c_str())) {
+            angleQueue_=missing; angleQueueTotal_=missing.size(); angleQueueFailed_=0;
+        }
+        ImGui::EndDisabled();
+    }
+    if (angleQueueFailed_) ImGui::TextDisabled("%zu runs could not be measured (no saved file or too little shared movement).",angleQueueFailed_);
+    const auto rows=mouseLibrary_.Placements(dataAgeView);
+    if (rows.empty()) { ImGui::TextDisabled("No enabled runs with a measured angle yet."); return; }
+
+    // Short names: the mouse name, plus connection and rate only where needed.
+    auto mouseName=[&](const std::string& setupId) {
+        const auto* setup=mouseLibrary_.FindSetup(setupId);
+        const auto* mouse=setup ? mouseLibrary_.FindMouse(setup->mouseId) : nullptr;
+        return mouse ? mouse->name : mouseLibrary_.Label(setupId);
+    };
+    auto setupName=[&](const std::string& setupId,bool detailed) {
+        const auto* setup=mouseLibrary_.FindSetup(setupId);
+        if (!setup || !detailed) return mouseName(setupId);
+        return mouseName(setupId)+" "+(setup->connection=="Wireless" ? "wireless" : "wired")+
+            (setup->pollingHz>=1000 && setup->pollingHz%1000==0 ? std::format(" {} kHz",setup->pollingHz/1000) :
+             setup->pollingHz ? std::format(" {} Hz",setup->pollingHz) : std::string());
+    };
+    // value = second - first; positive means the second mouse is later.
+    auto verdict=[](const std::string& first,const std::string& second,double value) {
+        if (std::abs(value)<0.0005) return std::string("equal");
+        return std::format("{} faster by {:.2f} ms",value>0 ? first : second,std::abs(value));
+    };
+    size_t single=0;
+    for (const auto& row : rows) if (!row.balanced) ++single;
+    ImGui::Checkbox(std::format("Show pairs with only one placement ({})",single).c_str(),&showSinglePlacement_);
+    ImGui::TextDisabled("%s results. Each placement shows its median, the number of runs, and the angle. Shift: how far the two placements differ; the correction removes it.",dataAgeView ? "Data age" : "Pipeline");
+    if (ImGui::BeginTable("Mouse placement",5,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_BordersOuterH)) {
+        ImGui::TableSetupColumn("Mouse pair",ImGuiTableColumnFlags_WidthStretch,1.3f);
+        ImGui::TableSetupColumn("Placement 1",ImGuiTableColumnFlags_WidthStretch,1.0f);
+        ImGui::TableSetupColumn("Placement 2",ImGuiTableColumnFlags_WidthStretch,1.0f);
+        ImGui::TableSetupColumn("Shift",ImGuiTableColumnFlags_WidthFixed,70);
+        ImGui::TableSetupColumn("Corrected result",ImGuiTableColumnFlags_WidthStretch,1.0f);
+        ImGui::TableHeadersRow();
+        // Pairs with both placements first, largest shift first.
+        std::vector<const PlacementBalance*> order;
+        for (const auto& row : rows) if (row.balanced || showSinglePlacement_) order.push_back(&row);
+        std::stable_sort(order.begin(),order.end(),[](const PlacementBalance* a,const PlacementBalance* b) {
+            if (a->balanced!=b->balanced) return a->balanced;
+            return a->balanced && std::abs(a->positive.medianMs-a->negative.medianMs)>std::abs(b->positive.medianMs-b->negative.medianMs);
+        });
+        for (const auto* row : order) {
+            const bool sameMouse=mouseName(row->first)==mouseName(row->second);
+            const auto* setupA=mouseLibrary_.FindSetup(row->first); const auto* setupB=mouseLibrary_.FindSetup(row->second);
+            const bool detailed=sameMouse || !setupA || !setupB || setupA->connection!=setupB->connection || setupA->pollingHz!=setupB->pollingHz;
+            const auto first=setupName(row->first,detailed), second=setupName(row->second,detailed);
+            ImGui::PushID(row->first.c_str()); ImGui::PushID(row->second.c_str());
+            ImGui::TableNextRow(); ImGui::TableNextColumn();
+            ImGui::TextUnformatted(std::format("{} vs {}",first,second).c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nvs\n%s",mouseLibrary_.Label(row->first).c_str(),mouseLibrary_.Label(row->second).c_str());
+            for (const auto* group : {&row->positive,&row->negative}) {
+                ImGui::TableNextColumn();
+                if (!group->runs) { ImGui::TextDisabled("no runs yet"); continue; }
+                ImGui::TextUnformatted(verdict(first,second,group->medianMs).c_str());
+                ImGui::TextDisabled("%zu run%s, angle %+.0f deg",group->runs,group->runs==1 ? "" : "s",group->meanAngleDeg);
+            }
+            ImGui::TableNextColumn();
+            if (row->balanced) ImGui::Text("%.2f ms",std::abs(row->positive.medianMs-row->negative.medianMs));
+            else ImGui::TextDisabled("--");
+            ImGui::TableNextColumn();
+            if (row->balanced) {
+                ImGui::TextUnformatted(verdict(first,second,row->balancedMs).c_str());
+                ImGui::TextDisabled(placementCorrection_ ? "used in the ranking" : "ranking uses all runs");
+            } else {
+                ImGui::TextDisabled("needs runs in both placements");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Swap the positions of the two mice and record again.");
+            }
+            if (row->aligned.runs) ImGui::TextDisabled("+%zu run%s nearly parallel (not used)",row->aligned.runs,row->aligned.runs==1 ? "" : "s");
+            ImGui::PopID(); ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+}
+
 void App::RenderLibraryDelete() {
     if (deleteKind_.empty()) return;
     ImGui::OpenPopup("Delete from library?");
@@ -344,10 +448,13 @@ void App::RenderMouseLibrary() {
     ImGui::SetNextItemWidth(220);
     if (ImGui::Combo("Result",&rankingView_,"Data age (arrival time)\0Pipeline (time-weighted)\0")) rankingDirty_=true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Data age: when the movement reaches the PC, including the sampling delay of the polling interval.\nPipeline: the same without the sampling delay, about half an interval per mouse (1 ms at 500 Hz).");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Correct for mouse placement",&placementCorrection_)) rankingDirty_=true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("For a mouse pair with runs in both placements (opposite mouse angles), Typical uses the mean of the two placement medians.\nThis cancels the shift from how the mice sit in the hand. Other pairs use the median of all runs.\nSee Mouse placement below. Fastest and Latest always show single runs."); 
     const bool dataAgeView=rankingView_==0;
     const int rankingMethod=dataAgeView ? LatencyMethod::DataAge : LatencyMethod::PipelineRanking;
     if (rankingDirty_) {
-        try { ranking_=mouseLibrary_.Ranking(rankingMethod); }
+        try { ranking_=mouseLibrary_.Ranking(rankingMethod,placementCorrection_); }
         catch (const std::exception& e) { ranking_.clear(); libraryMessage_=e.what(); }
         rankingDirty_=false;
     }
@@ -359,6 +466,11 @@ void App::RenderMouseLibrary() {
     }
     if (references.size()>1) ImGui::TextWrapped("These tables have no shared comparison. Their places cannot be compared with each other.");
     if (references.empty()) ImGui::TextDisabled("No enabled comparisons yet.");
+    else if (placementCorrection_) {
+        size_t pairs=0,corrected=0;
+        for (const auto& row : ranking_) { pairs+=row.pairs; corrected+=row.correctedPairs; }
+        ImGui::TextDisabled("Placement correction: %zu of %zu mouse pairs have runs in both placements.",corrected/2,pairs/2);
+    }
     std::string openRankingKey;
     for (const auto& [group,reference] : references) {
         ImGui::PushID(group);
@@ -394,7 +506,8 @@ void App::RenderMouseLibrary() {
                 resultCell("fastest",direct.fastestMs,direct.fastestKey);
                 resultCell("latest",direct.latestMs,direct.latestKey);
                 ImGui::TableNextColumn(); ImGui::Text("%zu",row.recordings);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enabled runs with any reference: %zu. Direct runs against this table's reference: %zu.",row.recordings,direct.recordings);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enabled runs with any reference: %zu. Direct runs against this table's reference: %zu.\nMouse pairs: %zu, placement-corrected: %zu.",
+                    row.recordings,direct.recordings,row.pairs,placementCorrection_ ? row.correctedPairs : size_t{0});
                 ImGui::PopID();
             }
             ImGui::EndTable();
@@ -406,6 +519,7 @@ void App::RenderMouseLibrary() {
         ImGui::TextWrapped("Typical uses the median for each mouse pair and combines linked comparisons. A single fast run can differ from Typical. Fastest means the lowest measured difference, not the most repeatable result. Separate tables are needed only when no comparison connects their mice. Data age and Pipeline are ranked separately; select one under Result. Recordings saved before Data age existed use a calculated Data age: Pipeline + (T_B - T_A)/2.");
         ImGui::TreePop();
     }
+    RenderPlacement(dataAgeView);
     if (ImGui::CollapsingHeader("Saved runs",ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextWrapped("%s",dataAgeView ?
             "All accepted runs are retained. Showing Data age results; calc. means calculated from the Pipeline result. Most stable marks the smallest spread against the same reference; ties favor more cycles." :
@@ -420,11 +534,11 @@ void App::RenderMouseLibrary() {
             if (!inserted && (run.spreadMs<previous.spreadMs || (run.spreadMs==previous.spreadMs && run.cycles>previous.cycles))) entry->second=i;
         }
         std::string openKey;
-        if (ImGui::BeginTable("Comparison history",9,ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY,ImVec2(0,230))) {
+        if (ImGui::BeginTable("Comparison history",10,ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY,ImVec2(0,230))) {
             ImGui::TableSetupColumn("Use",ImGuiTableColumnFlags_WidthFixed,35);
             ImGui::TableSetupColumn("Reference A",ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("Test B",ImGuiTableColumnFlags_WidthStretch);
-            for (const char* name : {"Method","B-A ms","Spread ms","Cycles","Run","Remove"}) ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
+            for (const char* name : {"Method","B-A ms","Spread ms","Cycles","Angle deg","Run","Remove"}) ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
             ImGui::TableSetupScrollFreeze(0,1); ImGui::TableHeadersRow();
             for (size_t i=0;i<rows.size();++i) {
                 const auto& [run,index,calculated]=rows[i];
@@ -442,6 +556,9 @@ void App::RenderMouseLibrary() {
                 ImGui::TableNextColumn(); ImGui::Text("%+.3f",run.differenceMs);
                 ImGui::TableNextColumn(); ImGui::Text("%.3f",run.spreadMs);
                 ImGui::TableNextColumn(); ImGui::Text("%zu",run.cycles);
+                ImGui::TableNextColumn();
+                if (std::isfinite(run.angleDeg)) ImGui::Text("%+.1f",run.angleDeg); else ImGui::TextDisabled("--");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mouse angle, B onto A. The sign shows the placement of the mice.");
                 ImGui::TableNextColumn(); ImGui::BeginDisabled(state_==AppState::Recording);
                 if (ImGui::SmallButton(best ? "Most stable" : "Open")) openKey=run.recordingKey;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",run.savedAt.c_str());

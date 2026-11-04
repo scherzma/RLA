@@ -31,6 +31,17 @@ struct EventTiming {
     double medianMs = 0.0, p95Ms = 0.0, maxMs = 0.0;
 };
 
+// Relative rotation of the two sensors, from the 2D motion of both mice.
+// angleDeg rotates B's counts onto A's axes (x right, y down, as reported).
+// A change of placement between sessions changes this angle and can shift a
+// latency result by up to about 1 ms; see MouseLibrary::Placements.
+struct OrientationFit {
+    bool valid = false;
+    double angleDeg = 0, scale = 1, coherence = 0; // coherence: 0 to 1 agreement after rotation.
+    size_t windows = 0;
+    std::string message;
+};
+
 enum class LatencyFeature { Minimum, Falling, Rising, Maximum };
 struct LatencyMatch {
     double timeA = 0, timeB = 0, differenceMs = 0, quality = 0;
@@ -62,6 +73,7 @@ public:
 
     // Fits B to A from shared movement only. Does not change event timestamps.
     static ScaleFit FitScaleB(const RecordingSession& session);
+    static OrientationFit FitOrientation(const RecordingSession& session);
     // Positive B-A means B appears later. Modes: 0 minima, 1 slopes, 2 both (legacy), 3 maxima, 4 all.
     // Binning changes only how report counts enter the time bins.
     static LatencyFit FitLatency(const RecordingSession& session, int featureMode = 4,

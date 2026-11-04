@@ -69,6 +69,8 @@ private:
     void CaptureMouseIdentity();
     void DetectSessionRates(bool bindDevices = false);
     void OpenRankedRun(const std::string& key);
+    void RenderPlacement(bool dataAgeView);
+    void StepAngleBackfill(); // Measures one saved recording per frame.
     void RenderTimingPanel();
     void RenderStatusBar();
 
@@ -109,6 +111,8 @@ private:
     std::deque<RecordingSession> runsToKeep_;
     std::string libraryMessage_, comparisonMessage_;
     std::vector<MouseRank> ranking_;
+    bool showSinglePlacement_ = false;
+    bool placementCorrection_ = true; // Ranking uses PlacementBalance for pairs with both placements.
     int rankingView_ = 0; // 0: data age (arrival time, default), 1: pipeline (time-weighted)
     std::string editMouse_, editSetup_, setupParent_;
     char mouseName_[161]{}, setupLabel_[161]{};
@@ -137,9 +141,13 @@ private:
     RecordingSession currentSession_;
     AnalysisResult analysisResult_;
     // Both fits use the same recording. Only the bin rule differs.
-    struct LatencyResults { LatencyFit pipeline, dataAge; };
+    struct LatencyResults { LatencyFit pipeline, dataAge; OrientationFit orientation; };
     LatencyFit latencyFit_;  // Pipeline: time-weighted bins.
     LatencyFit dataAgeFit_;  // Data age: arrival-time bins.
+    OrientationFit orientationFit_; // Mouse angle of the same recording.
+    std::string orientationKey_;    // Recording key of orientationFit_.
+    std::vector<std::string> angleQueue_; // Saved recordings still to measure.
+    size_t angleQueueTotal_ = 0, angleQueueFailed_ = 0;
     std::future<LatencyResults> latencyTask_;
     int matchView_ = 0; // Matches shown when both fits are valid. 0: data age (default), 1: pipeline.
     const LatencyFit& MatchFit() const;

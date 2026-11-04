@@ -102,6 +102,55 @@ std::vector<MovementBin> Analyzer::BinArrival(const std::vector<MouseEvent>& eve
     return bins;
 }
 
+OrientationFit Analyzer::FitOrientation(const RecordingSession& session) {
+    OrientationFit result;
+    result.message = "Not enough movement of both mice to measure their angle.";
+    if (!std::isfinite(session.qpcFrequency) || session.qpcFrequency <= 0 ||
+        session.eventsA.empty() || session.eventsB.empty()) return result;
+    // Windows of a few reports of the slower mouse. A latency difference of a
+    // few milliseconds lowers the agreement slightly but leaves the angle intact.
+    const double binMs = (std::max)(2.0, std::round((std::max)(
+        MedianInterval(session.eventsA, session.qpcFrequency), MedianInterval(session.eventsB, session.qpcFrequency))));
+    if (binMs > 50.0) return result;
+    const double windowMs = (std::max)(8.0, 4 * binMs);
+    struct Delta { double x = 0, y = 0; };
+    auto windows = [&](const std::vector<MouseEvent>& events) {
+        std::map<int64_t, Delta> out;
+        for (const auto& bin : BinMovement(events, session.startTimestamp, session.qpcFrequency, binMs, true)) {
+            auto& d = out[static_cast<int64_t>(std::floor(bin.index * binMs / windowMs))];
+            d.x += bin.x; d.y += bin.y;
+        }
+        return out;
+    };
+    const auto a = windows(session.eventsA), b = windows(session.eventsB);
+    if (a.empty() || b.empty()) return result;
+    // Complex least squares: A ~ s * exp(i * angle) * B, with z = x + i y.
+    double re = 0, im = 0, energyA = 0, energyB = 0;
+    for (const auto& [index, da] : a) {
+        energyA += da.x * da.x + da.y * da.y;
+        const auto it = b.find(index);
+        if (it == b.end()) continue;
+        const auto& db = it->second;
+        re += db.x * da.x + db.y * da.y;
+        im += db.x * da.y - db.y * da.x;
+        if (da.x || da.y) ++result.windows;
+    }
+    for (const auto& [index, db] : b) energyB += db.x * db.x + db.y * db.y;
+    const double magnitude = std::hypot(re, im);
+    if (energyA <= 0 || energyB <= 0 || magnitude <= 0) return result;
+    result.angleDeg = std::atan2(im, re) * 180.0 / 3.14159265358979323846;
+    result.scale = magnitude / energyB;
+    result.coherence = magnitude / std::sqrt(energyA * energyB);
+    if (result.windows < 50) return result;
+    if (result.coherence < 0.8) {
+        result.message = "The two mice did not move together closely enough to measure their angle.";
+        return result;
+    }
+    result.valid = true;
+    result.message.clear();
+    return result;
+}
+
 ScaleFit Analyzer::FitScaleB(const RecordingSession& session) {
     ScaleFit result;
     result.message = "Not enough matching movement. Record both mice moving together for longer.";

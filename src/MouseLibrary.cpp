@@ -159,10 +159,74 @@ bool MouseLibrary::AddComparison(const RecordingSession& session, const LatencyF
     SavedComparison result{RecordingKey(session), session.mouseA.setupId, session.mouseB.setupId,
         std::format("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond),
         method, fit.differenceMs, fit.spreadMs, fit.binMs, fit.matchedCycles};
+    const auto orientation=Analyzer::FitOrientation(session);
+    if (orientation.valid) result.angleDeg=orientation.angleDeg;
     for (auto& old : comparisons_) if (old.recordingKey == result.recordingKey && old.method == method) {
-        result.enabled = old.enabled; old = std::move(result); return true;
+        result.enabled = old.enabled;
+        if (!std::isfinite(result.angleDeg)) result.angleDeg = old.angleDeg;
+        old = std::move(result); return true;
     }
     comparisons_.push_back(std::move(result)); return true;
+}
+size_t MouseLibrary::SetAngle(const std::string& recordingKey, double angleDeg) {
+    if (!std::isfinite(angleDeg) || std::abs(angleDeg)>180) return 0;
+    size_t changed=0;
+    for (auto& run : comparisons_) if (run.recordingKey==recordingKey) { run.angleDeg=angleDeg; ++changed; }
+    return changed;
+}
+std::vector<std::string> MouseLibrary::KeysWithoutAngle() const {
+    std::set<std::string> keys;
+    for (const auto& run : comparisons_) if (!std::isfinite(run.angleDeg)) keys.insert(run.recordingKey);
+    return {keys.begin(),keys.end()};
+}
+std::vector<PlacementBalance> MouseLibrary::Placements(bool dataAge) const {
+    // One row per recording: the measured result, else the newest of its kind.
+    std::map<std::string,SavedComparison> perRecording;
+    for (const auto& row : ResultRows(dataAge)) {
+        const auto& run=row.run;
+        if (!run.enabled || !std::isfinite(run.angleDeg)) continue;
+        const auto [entry,inserted]=perRecording.emplace(run.recordingKey,run);
+        if (!inserted && !row.calculated && run.method>=entry->second.method) entry->second=run;
+    }
+    struct Sums { std::vector<double> ms; double angle=0; size_t n=0; };
+    std::map<std::pair<std::string,std::string>,std::array<Sums,3>> pairs; // positive, negative, aligned
+    for (const auto& [key,run] : perRecording) {
+        const bool forward=run.setupA<run.setupB;
+        const double ms=forward ? run.differenceMs : -run.differenceMs, angle=forward ? run.angleDeg : -run.angleDeg;
+        auto& groups=pairs[forward ? std::make_pair(run.setupA,run.setupB) : std::make_pair(run.setupB,run.setupA)];
+        auto& g=groups[angle>PlacementAngleDeg ? 0 : angle< -PlacementAngleDeg ? 1 : 2];
+        g.ms.push_back(ms); g.angle+=angle; ++g.n;
+    }
+    std::vector<PlacementBalance> result;
+    for (const auto& [pair,groups] : pairs) {
+        PlacementBalance balance{pair.first,pair.second};
+        PlacementGroup* targets[3]={&balance.positive,&balance.negative,&balance.aligned};
+        for (size_t i=0;i<3;++i) if (groups[i].n)
+            *targets[i]={groups[i].n,Median(groups[i].ms),groups[i].angle/groups[i].n};
+        balance.balanced=balance.positive.runs && balance.negative.runs;
+        if (balance.balanced) balance.balancedMs=(balance.positive.medianMs+balance.negative.medianMs)/2;
+        result.push_back(std::move(balance));
+    }
+    return result;
+}
+PlacementNote MouseLibrary::Placement(const std::string& setupA, const std::string& setupB, double angleDeg,
+    const std::string& excludeKey) const {
+    PlacementNote note;
+    if (!std::isfinite(angleDeg) || std::abs(angleDeg)<=PlacementAngleDeg) return note;
+    std::set<std::string> seen;
+    double sum=0;
+    for (const auto& run : comparisons_) {
+        if (!run.enabled || !std::isfinite(run.angleDeg) || run.recordingKey==excludeKey || !seen.insert(run.recordingKey).second) continue;
+        double angle;
+        if (run.setupA==setupA && run.setupB==setupB) angle=run.angleDeg;
+        else if (run.setupA==setupB && run.setupB==setupA) angle=-run.angleDeg;
+        else continue;
+        if (std::abs(angle)<=PlacementAngleDeg) continue;
+        if ((angle>0)==(angleDeg>0)) ++note.same;
+        else { ++note.opposite; sum+=angle; }
+    }
+    if (note.opposite) note.oppositeAngleDeg=sum/note.opposite;
+    return note;
 }
 int MouseLibrary::DetectRate(const std::vector<MouseEvent>& events, double frequency) {
     if (events.size()<100 || !std::isfinite(frequency) || frequency<=0) return 0;
@@ -303,25 +367,36 @@ DirectRunSummary MouseLibrary::DirectRuns(const std::string& setup, const std::s
     return result;
 }
 
-std::vector<MouseRank> MouseLibrary::Ranking(int method) const {
+std::vector<MouseRank> MouseLibrary::Ranking(int method, bool placementCorrected) const {
     // Robust median per pair, then fit B-A constraints within each connected group.
     using Pair = std::pair<size_t, size_t>;
     std::map<std::string, size_t> indices;
     std::vector<MouseRank> rows;
     for (const auto& setup : setups_) { indices[setup.id] = rows.size(); rows.push_back({setup.id}); }
-    std::map<Pair, std::vector<double>> differences;
+    struct PairRuns { std::vector<double> all, positive, negative; };
+    std::map<Pair, PairRuns> differences;
     for (const auto& c : Selected(method)) {
         const auto ai = indices.find(c.setupA), bi = indices.find(c.setupB);
         if (ai == indices.end() || bi == indices.end() || ai->second == bi->second) continue;
         const auto a = ai->second, b = bi->second;
         ++rows[a].recordings; ++rows[b].recordings;
-        differences[{(std::min)(a,b),(std::max)(a,b)}].push_back(a < b ? c.differenceMs : -c.differenceMs);
+        auto& runs = differences[{(std::min)(a,b),(std::max)(a,b)}];
+        const double value = a < b ? c.differenceMs : -c.differenceMs;
+        runs.all.push_back(value);
+        if (std::isfinite(c.angleDeg)) {
+            const double angle = a < b ? c.angleDeg : -c.angleDeg;
+            if (angle > PlacementAngleDeg) runs.positive.push_back(value);
+            else if (angle < -PlacementAngleDeg) runs.negative.push_back(value);
+        }
     }
     struct Edge { size_t a,b; double delta,weight; };
     std::vector<Edge> edges;
     std::vector<std::vector<size_t>> adjacent(rows.size());
-    for (const auto& [pair, values] : differences) {
-        const auto i = edges.size(); edges.push_back({pair.first,pair.second,Median(values),static_cast<double>(values.size())});
+    for (const auto& [pair, runs] : differences) {
+        const bool corrected = placementCorrected && !runs.positive.empty() && !runs.negative.empty();
+        const double delta = corrected ? (Median(runs.positive) + Median(runs.negative)) / 2 : Median(runs.all);
+        for (size_t member : {pair.first, pair.second}) { ++rows[member].pairs; if (corrected) ++rows[member].correctedPairs; }
+        const auto i = edges.size(); edges.push_back({pair.first,pair.second,delta,static_cast<double>(runs.all.size())});
         adjacent[pair.first].push_back(i); adjacent[pair.second].push_back(i);
     }
     int group = 0;
@@ -380,8 +455,11 @@ std::string MouseLibrary::Save(const std::filesystem::path& path) const {
         for (const auto& m : mice_) j["mice"].push_back({{"id",m.id},{"name",m.name}});
         for (const auto& s : setups_) j["setups"].push_back({{"id",s.id},{"mouseId",s.mouseId},{"connection",s.connection},{"pollingHz",s.pollingHz},{"label",s.label}});
         j["bindings"]=bindings_;
-        for (const auto& c : comparisons_) j["comparisons"].push_back({{"recordingKey",c.recordingKey},{"setupA",c.setupA},{"setupB",c.setupB},
-            {"savedAt",c.savedAt},{"method",c.method},{"differenceMs",c.differenceMs},{"spreadMs",c.spreadMs},{"binMs",c.binMs},{"cycles",c.cycles},{"enabled",c.enabled}});
+        for (const auto& c : comparisons_) {
+            j["comparisons"].push_back({{"recordingKey",c.recordingKey},{"setupA",c.setupA},{"setupB",c.setupB},
+                {"savedAt",c.savedAt},{"method",c.method},{"differenceMs",c.differenceMs},{"spreadMs",c.spreadMs},{"binMs",c.binMs},{"cycles",c.cycles},{"enabled",c.enabled}});
+            if (std::isfinite(c.angleDeg)) j["comparisons"].back()["angleDeg"]=c.angleDeg;
+        }
         if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
         std::ofstream output(temp); output.exceptions(std::ios::failbit|std::ios::badbit); output << j.dump(2); output.close();
         if (!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Could not replace the mouse library file.");
@@ -425,6 +503,11 @@ bool MouseLibrary::Load(const std::filesystem::path& path, std::string& error) {
                 !loaded.FindSetup(result.setupA) || !loaded.FindSetup(result.setupB) || result.setupA==result.setupB ||
                 !std::isfinite(result.differenceMs) || !std::isfinite(result.spreadMs) || !std::isfinite(result.binMs) || result.spreadMs<0 || result.binMs<=0)
                 throw std::runtime_error("Invalid stored comparison.");
+            if (c.contains("angleDeg")) {
+                if (!c.at("angleDeg").is_number() || !std::isfinite(c.at("angleDeg").get<double>()) || std::abs(c.at("angleDeg").get<double>())>180)
+                    throw std::runtime_error("Invalid stored mouse angle.");
+                result.angleDeg=c.at("angleDeg").get<double>();
+            }
             loaded.comparisons_.push_back(std::move(result));
         }
         *this=std::move(loaded); return true;

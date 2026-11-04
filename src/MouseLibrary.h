@@ -1,6 +1,7 @@
 #pragma once
 #include "Analyzer.h"
 #include <filesystem>
+#include <limits>
 #include <map>
 
 namespace RLA {
@@ -24,6 +25,8 @@ struct SavedComparison {
     double differenceMs = 0, spreadMs = 0, binMs = 0;
     size_t cycles = 0;
     bool enabled = true;
+    // Mouse angle of the recording (Analyzer::FitOrientation, B onto A). NaN if unknown.
+    double angleDeg = std::numeric_limits<double>::quiet_NaN();
 };
 struct ResultRow {
     SavedComparison run;
@@ -40,7 +43,27 @@ struct MouseRank {
     int group = 0, place = 0; // Group zero means not yet compared.
     double relativeMs = 0, residualMs = 0;
     size_t recordings = 0;
+    size_t pairs = 0, correctedPairs = 0; // Mouse pairs of this setup; pairs with both placements when corrected.
 };
+
+// Runs of one setup pair split by mouse placement. Values are second minus
+// first (setup IDs in sorted order), so A/B order does not matter. A placement
+// is the sign of the mouse angle; |angle| below PlacementAngleDeg is unassigned.
+struct PlacementGroup {
+    size_t runs = 0;
+    double medianMs = 0, meanAngleDeg = 0;
+};
+struct PlacementBalance {
+    std::string first, second;
+    PlacementGroup positive, negative, aligned;
+    bool balanced = false;  // Both placements present.
+    double balancedMs = 0;  // Mean of the two placement medians.
+};
+struct PlacementNote {
+    size_t same = 0, opposite = 0;  // Other enabled runs of the pair with a known angle.
+    double oppositeAngleDeg = 0;    // Mean angle of the opposite runs, in this run's A/B order.
+};
+constexpr double PlacementAngleDeg = 2.0;
 
 class MouseLibrary {
 public:
@@ -63,10 +86,19 @@ public:
     // DataAge requires an arrival-time fit; other methods require a time-weighted fit.
     bool AddComparison(const RecordingSession& session, const LatencyFit& fit, int method);
     void SetEnabled(size_t index, bool enabled);
+    // Sets the angle of every result of one recording. Returns the number of results changed.
+    size_t SetAngle(const std::string& recordingKey, double angleDeg);
+    std::vector<std::string> KeysWithoutAngle() const;
+    // One row per recording (newest method of the selected kind), enabled runs only.
+    std::vector<PlacementBalance> Placements(bool dataAge) const;
+    PlacementNote Placement(const std::string& setupA, const std::string& setupB, double angleDeg,
+        const std::string& excludeKey) const;
     void DeleteMouse(const std::string& id);
     void DeleteSetup(const std::string& id);
     void DeleteComparison(const std::string& key, int method);
-    std::vector<MouseRank> Ranking(int method) const;
+    // placementCorrected: a pair with runs in both placements uses the mean of the
+    // two placement medians (PlacementBalance::balancedMs) instead of the median of all runs.
+    std::vector<MouseRank> Ranking(int method, bool placementCorrected = false) const;
     // Rows of one result kind. Pipeline: every pipeline result (ids 0-4). Data age:
     // the measured result, or for a recording without one, its newest pipeline
     // result plus (T_B - T_A) / 2 with T = 1000 / detected Hz of each setup.

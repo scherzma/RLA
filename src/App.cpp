@@ -489,6 +489,7 @@ void App::ResetLatencyAnalysis() {
     ++sessionRevision_;
     latencyFit_ = {};
     dataAgeFit_ = {};
+    orientationFit_ = {};
     comparisonMessage_.clear();
     selectedLatencyMatch_ = -1;
     focusLatencyMatch_ = false;
@@ -498,12 +499,14 @@ void App::StartLatencyAnalysis() {
     if (state_ == AppState::Recording || latencyTask_.valid()) return;
     latencyFit_ = {};
     dataAgeFit_ = {};
+    orientationFit_ = {};
     selectedLatencyMatch_ = -1;
     latencyRevision_ = sessionRevision_;
     try {
         latencyTask_ = std::async(std::launch::async, [session = currentSession_] {
             return LatencyResults{Analyzer::FitLatency(session, 4, LatencyBinning::TimeWeighted),
-                                  Analyzer::FitLatency(session, 4, LatencyBinning::Arrival)};
+                                  Analyzer::FitLatency(session, 4, LatencyBinning::Arrival),
+                                  Analyzer::FitOrientation(session)};
         });
     } catch (const std::exception& error) {
         latencyFit_.message = dataAgeFit_.message = std::string("Analysis failed: ") + error.what();
@@ -532,6 +535,11 @@ void App::PollLatencyAnalysis() {
         if (latencyRevision_ == sessionRevision_) {
             latencyFit_ = std::move(results.pipeline);
             dataAgeFit_ = std::move(results.dataAge);
+            orientationFit_ = std::move(results.orientation);
+            orientationKey_.clear();
+            if (orientationFit_.valid) {
+                try { orientationKey_ = MouseLibrary::RecordingKey(currentSession_); } catch (const std::exception&) {}
+            }
             SelectClosestMatch();
             if ((latencyFit_.valid || dataAgeFit_.valid) && mouseLibrary_.autoRank &&
                 !currentSession_.mouseA.setupId.empty() && !currentSession_.mouseB.setupId.empty()) SaveComparison();
@@ -574,6 +582,19 @@ void App::RenderLatencyControls() {
     };
     resultLine("Data age (arrival time)",dataAgeFit_);
     resultLine("Pipeline (time-weighted)",latencyFit_);
+    if (orientationFit_.valid) {
+        ImGui::TextDisabled("Mouse angle: %+.1f deg (B onto A, agreement %.2f)",orientationFit_.angleDeg,orientationFit_.coherence);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How far B's sensor is rotated against A's, from the movement of both mice.\nThe sign shows the placement. A different placement can shift a result by up to about 1 ms.\nSee Library / rankings > Mouse placement.");
+        const auto note=mouseLibrary_.Placement(currentSession_.mouseA.setupId,currentSession_.mouseB.setupId,
+            orientationFit_.angleDeg,orientationKey_);
+        if (note.opposite) {
+            ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.0f,0.6f,0.3f,1));
+            ImGui::TextWrapped("Placement differs from %zu earlier run%s of this pair (angle %+.1f deg there, %zu with the same placement). "
+                "A different placement can shift results by up to about 1 ms. Compare runs of one placement, or use Balanced under Mouse placement.",
+                note.opposite,note.opposite==1 ? "" : "s",note.oppositeAngleDeg,note.same);
+            ImGui::PopStyleColor();
+        }
+    } else if (!orientationFit_.message.empty()) ImGui::TextDisabled("Mouse angle: %s",orientationFit_.message.c_str());
     if (ImGui::Button("Review / save result")) { showLibrary_=true; libraryPage_=1; }
     if (latencyFit_.valid && dataAgeFit_.valid) {
         ImGui::SameLine(); ImGui::SetNextItemWidth(160);

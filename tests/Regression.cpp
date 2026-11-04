@@ -1401,6 +1401,86 @@ static void RunAutosaveChecks() {
     std::cout << "Autosave snapshot, queue, clear, shutdown and error checks passed.\n";
 }
 
+
+static RLA::RecordingSession RotateB(RLA::RecordingSession session, double degrees) {
+    const double angle = degrees * 3.14159265358979323846 / 180;
+    for (auto& e : session.eventsB) {
+        const double x = e.deltaX, y = e.deltaY;
+        e.deltaX = static_cast<int32_t>(std::lround(x * std::cos(angle) - y * std::sin(angle)));
+        e.deltaY = static_cast<int32_t>(std::lround(x * std::sin(angle) + y * std::cos(angle)));
+    }
+    return session;
+}
+
+static void RunPlacementChecks() {
+    using namespace RLA;
+    for (double degrees : {0.0, 10.0, -25.0}) {
+        const auto fit = Analyzer::FitOrientation(RotateB(LatencySession(), degrees));
+        std::cout << "Mouse angle rotated=" << degrees << " fit=" << fit.angleDeg << " agreement=" << fit.coherence << '\n';
+        Check(fit.valid && std::abs(fit.angleDeg + degrees) < 1.0 && fit.coherence > 0.95,
+              "Mouse angle must recover the rotation of B against A");
+    }
+    auto still = LatencySession(); still.eventsB.resize(10);
+    Check(!Analyzer::FitOrientation(still).valid, "Mouse angle needs shared movement");
+
+    MouseLibrary library;
+    const auto a = library.AddMouse("Reference"), b = library.AddMouse("Test");
+    const auto sa = library.AddSetup(a, "Wired", 8000, ""), sb = library.AddSetup(b, "Wireless", 4000, "");
+    int run = 0;
+    auto add = [&](double degrees, double differenceMs, bool swapped) {
+        auto session = RotateB(LatencySession(), degrees); session.endTimestamp += ++run;
+        session.mouseA = library.Identity(sa); session.mouseB = library.Identity(sb);
+        if (swapped) { std::swap(session.eventsA, session.eventsB); std::swap(session.mouseA, session.mouseB); differenceMs = -differenceMs; }
+        auto fit = Analyzer::FitLatency(session); fit.differenceMs = differenceMs;
+        Check(library.AddComparison(session, fit, LatencyMethod::Pipeline), "Placement test run must be stored");
+        return MouseLibrary::RecordingKey(session);
+    };
+    add(10, 0.6, false); add(10, 0.8, false); add(-10, -0.2, false);
+    add(10, 0.7, true); // Same placement, recorded with A and B swapped.
+    Check(library.KeysWithoutAngle().empty(), "New results must store their mouse angle");
+    auto rows = library.Placements(false);
+    Check(rows.size() == 1, "One setup pair must give one placement row");
+    const double sign = rows[0].first == sa ? 1 : -1; // Values are second minus first.
+    const auto& tilted = sign > 0 ? rows[0].negative : rows[0].positive; // B rotated +10: angle B onto A is -10.
+    const auto& other = sign > 0 ? rows[0].positive : rows[0].negative;
+    Check(tilted.runs == 3 && std::abs(tilted.medianMs - sign * 0.7) < 1e-9 && std::abs(std::abs(tilted.meanAngleDeg) - 10) < 1,
+          "Swapped A/B runs must join their placement with consistent signs");
+    Check(other.runs == 1 && std::abs(other.medianMs + sign * 0.2) < 1e-9, "The other placement must be kept apart");
+    auto rankedMs = [&](bool corrected) {
+        double first = 0, second = 0;
+        for (const auto& rank : library.Ranking(LatencyMethod::Pipeline, corrected)) {
+            if (rank.setupId == sa) first = rank.relativeMs;
+            if (rank.setupId == sb) second = rank.relativeMs;
+        }
+        return second - first;
+    };
+    Check(std::abs(rankedMs(false) - 0.65) < 1e-9, "Without correction, the ranking must use the median of all runs");
+    Check(std::abs(rankedMs(true) - 0.25) < 1e-9, "With correction, the ranking must use the mean of the placement medians");
+    Check(rows[0].balanced && std::abs(rows[0].balancedMs - sign * 0.25) < 1e-9, "Balanced must average the two placement means");
+    const auto note = library.Placement(sa, sb, -10, "");
+    Check(note.same == 3 && note.opposite == 1 && std::abs(note.oppositeAngleDeg - 10) < 1,
+          "A new run must be compared with earlier runs of both placements");
+    Check(library.SetAngle(std::string(64, 'f'), 5) == 0 && library.SetAngle(library.Comparisons()[0].recordingKey, 400) == 0,
+          "Unknown recordings and invalid angles must not be stored");
+    const auto directory = std::filesystem::temp_directory_path() / (L"RLA-placement-" + std::to_wstring(GetCurrentProcessId()));
+    const auto path = directory / L"mice.json";
+    Check(library.Save(path).empty(), "Library with angles must save");
+    MouseLibrary loaded; std::string error;
+    Check(loaded.Load(path, error) && loaded.Comparisons().size() == library.Comparisons().size() &&
+          std::abs(loaded.Comparisons()[0].angleDeg - library.Comparisons()[0].angleDeg) < 1e-9, "Mouse angles must survive save and load");
+    {
+        nlohmann::json j; { std::ifstream input(path); input >> j; }
+        for (auto& c : j["comparisons"]) c.erase("angleDeg");
+        { std::ofstream output(path); output << j; }
+        MouseLibrary old;
+        Check(old.Load(path, error) && old.KeysWithoutAngle().size() == 4 && old.Placements(false).empty(),
+              "Libraries saved before mouse angles must still load");
+        j["comparisons"][0]["angleDeg"] = "x"; { std::ofstream output(path); output << j; }
+        Check(!old.Load(path, error), "An invalid stored angle must be rejected");
+    }
+    std::error_code ignored; std::filesystem::remove_all(directory, ignored);
+}
+
 int main(int argc, char** argv) {
     try {
         if (argc > 1 && std::string_view(argv[1]) == "--soak") {
@@ -1452,6 +1532,7 @@ int main(int argc, char** argv) {
         RunLatencyChecks();
         RunDataAgeChecks();
         RunMouseLibraryChecks();
+        RunPlacementChecks();
         RunAutosaveChecks();
         RunBinningChecks();
         RunTimingPauseChecks();

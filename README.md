@@ -69,6 +69,7 @@ Use one name for each physical mouse and link its wired and wireless connections
 
 - **Result:** **Data age** (default) or **Pipeline**. They are ranked separately.
 - Recordings saved before Data age existed get a calculated Data age: their Pipeline result + (T_B - T_A) / 2 from the detected Hz. **Saved runs** marks these as *calc.*; opening and analyzing a run measures it.
+- **Correct for mouse placement** (on by default): for a mouse pair with runs in both placements, Typical uses the mean of the two placement medians. See **Placement** under Measurement limits.
 - **Typical** combines all enabled runs and sets the order. **Fastest run** and **Latest run** are single runs against the named reference. Click one to open its recording.
 
 **Negative means faster, positive means slower.** Separate tables appear only when no comparison connects their mice. The screenshots show real results from one library, not a general ranking of these mice.
@@ -91,6 +92,7 @@ Everything is stored in `%LOCALAPPDATA%\RLA`. Updating RLA keeps it.
 - RLA compares two mice. It does not measure absolute click-to-photon or USB latency.
 - The result includes everything from the motion to the application timestamp: sensor, firmware, wireless link, USB, and Windows input handling. Differences in how the two mice move also count.
 - **Spread** shows how much the matched points vary. It is not an accuracy figure. Repeat runs and inspect the curves.
+- **Placement.** The hand also rotates a little, so two mice at different spots do not reverse at exactly the same time. Changing how the mice sit can shift a result by up to about 1 ms. RLA measures the angle between the two sensors in each run (**Mouse angle**) and warns when it differs from earlier runs of the same pair. **Library / rankings > Mouse placement** groups runs by the sign of the angle and shows **Balanced**, the mean of both placements. Swap the two mice halfway through a session to get both.
 - Close input-sharing software. In local tests, an active Synergy reduced the observed event rate; closing it restored the rate.
 
 ## Build from source
